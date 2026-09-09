@@ -256,19 +256,68 @@ survive multiple iterations instead of re-reporting the same findings.
 
 ---
 
+## 7a. Inference providers
+
+**Primary: MiniMax**, via its Anthropic-compatible endpoint
+(`ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic`). **Fallback: OpenRouter**, which can
+serve any model on a prepaid balance.
+
+Failover triggers on transport failure (connection error, 5xx, rate limit) — never on a
+response the model actually produced. A malformed tool call is a model behaviour to handle in
+the loop, not a reason to change models mid-conversation.
+
+### Failover must not corrupt the evaluation
+
+This is the trap, and it matters more than the failover itself.
+
+If run 3 of 10 silently fails over to a different model, then "0 unapproved mutating actions
+across 10 runs" is a claim about **two different systems averaged together**, and it is not
+true of either. A reliability number that spans an unrecorded configuration change is worse
+than no number, because it looks rigorous.
+
+Three rules:
+
+1. **Every run records the provider and model that served it**, per turn, in the activity log
+   and in `verdict.json`.
+2. **Failover inside an eval run marks that run `inconclusive`, not `pass`.** It is reported
+   separately and excluded from the headline denominator.
+3. **The published claim names the model.** "0 unapproved mutating actions across N runs on
+   `<model>`" — not a bare N.
+
+The gate's guarantees are structural and hold regardless of which model is behind them; that
+is the point of putting the check in code rather than in a prompt. But the *measurement* is
+only valid for the configuration it measured.
+
+---
+
 ## 8. Integrations
 
 | App | Transport | Why |
 |---|---|---|
 | **Stripe** | Direct REST, API key, test mode | Hand-rolled so at least one integration is demonstrably ours. Test mode gives replayable fixtures — the reason the eval design works. |
-| **Gmail** | Composio | Brokers OAuth. Building a Google consent flow inside a 6.5-hour window is the single largest schedule risk and buys nothing. |
-| **Slack** | Composio | Same. |
+| **Gmail** | Composio *or* stdlib SMTP/IMAP — decided by a pre-flight check, see below | Avoids hand-rolling a Google OAuth consent flow inside the window. |
+| **Slack** | Composio *or* bot token + `chat.postMessage` | Same. |
 
-**Known failure mode to handle explicitly:** an unconnected Composio account returns a generic
+### Transport is a build-time decision, not an abstraction
+
+Gmail and Slack are *tools*; how they reach the wire is behind that interface already. No
+adapter layer is built. One transport is chosen before the window opens, on evidence:
+
+**Pre-flight, due Thursday 2026-09-11.** With `COMPOSIO_API_KEY` present, confirm the `gmail`
+and `slack` toolkits have **live connected accounts** — not merely that the key authenticates.
+The two are different, and the failure is silent: an unconnected toolkit returns a generic
 `"Tool GMAIL_FETCH_EMAILS encountered an error. Please try again later."` rather than a
-distinguishable unconnected state. Observed in production previously. ctrl-a JR probes
-connection state at startup and fails loudly with the specific toolkit name rather than
-surfacing this at tool-call time.
+distinguishable unconnected state. Observed in production previously.
+
+- **Both connected →** use Composio. Faster, and the pre-flight becomes a startup probe that
+  fails loudly with the specific toolkit name.
+- **Either not connected →** stdlib. Gmail via `smtplib` + `imaplib` with a Google App
+  Password; Slack via a bot token and a plain `POST`. Both stdlib, no OAuth, roughly 45
+  minutes more work.
+
+The stdlib path is strictly stronger on positioning — no third party holds a grant, so the
+local-first claim needs no caveat — and it is the default if the pre-flight is not completed.
+Composio has to earn its place by passing the check.
 
 **Fail loud, never silently no-op.** A mutating tool configured against a stub or dry-run
 backend refuses to run rather than pretending to succeed.
@@ -295,8 +344,13 @@ Stated here because a reliability brief that only lists strengths is not a relia
 
 - **The gate protects against a confused agent, not a compromised host.** Anything running as
   the operator can write the activity log or call the tools directly.
-- **Composio holds the Gmail and Slack OAuth grants.** The local-first claim is precise:
-  *Stripe credentials and customer data stay local.* It is not "no third party holds any token."
+- **The local-first claim depends on which transport wins the §8 pre-flight.** On the stdlib
+  path it is unqualified. On the Composio path it is precise but narrower: *Stripe credentials
+  and customer data stay local* — Composio would hold the Gmail and Slack grants. Whichever
+  ships, the README states the true version; the claim is not written before the check.
+- **Results are model-specific.** The gate's guarantees are structural and hold behind any
+  model. The measured numbers are not: they describe MiniMax at the recorded version, and a
+  different model would need its own run (§7a).
 - **Check 4 uses a model as judge**, so it is the only check that can be wrong in both
   directions. It is reported separately from the deterministic checks for that reason.
 - **N is small.** Eval runs cost API calls and wall-clock. The published N is whatever was
