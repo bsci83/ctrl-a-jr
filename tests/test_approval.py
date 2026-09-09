@@ -69,3 +69,20 @@ def test_cannot_resolve_twice():
     store.resolve(rec.id, Decision.APPROVED)
     with pytest.raises(ValueError):
         store.resolve(rec.id, Decision.DENIED)
+
+
+def test_verify_false_for_a_pending_record():
+    """An unresolved approval must never authorise execution."""
+    store = approval.ApprovalStore()
+    args = {"to": "a@b.c", "body": "pay please"}
+    rec = store.request("gmail_send", args, rendered="x")
+    assert store.verify(rec.id, args) is False
+
+
+def test_verify_false_for_a_denied_record():
+    """A denial must not be bypassable by re-deriving a matching hash."""
+    store = approval.ApprovalStore()
+    args = {"to": "a@b.c", "body": "pay please"}
+    rec = store.request("gmail_send", args, rendered="x")
+    store.resolve(rec.id, Decision.DENIED)
+    assert store.verify(rec.id, args) is False
