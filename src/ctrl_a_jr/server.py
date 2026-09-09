@@ -95,6 +95,12 @@ class WebApprover:
             def do_POST(self):
                 host = (self.headers.get("Host") or "").strip()
                 if host not in (f"127.0.0.1:{approver.port}", f"localhost:{approver.port}"):
+                    # Drain the body before responding: closing the connection with
+                    # unread bytes still in flight races the client's own write and
+                    # intermittently resets the socket instead of delivering the 403.
+                    length = int(self.headers.get("Content-Length", 0))
+                    if length:
+                        self.rfile.read(length)
                     self.send_response(403)
                     self.end_headers()
                     return

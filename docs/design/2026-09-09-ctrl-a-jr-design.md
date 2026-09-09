@@ -423,13 +423,6 @@ Stated here because a reliability brief that only lists strengths is not a relia
   id, which is `ap_` plus 48 bits of UUID and cannot be read cross-origin. Judged low risk and
   deferred rather than fully fixed; a same-machine attacker who can already read the operator's
   browser state is outside this threat model.
-- **A run where nothing happened can still report `exit: true`.** `exit` is now
-  `fail == 0 and pass > 0`, which correctly flips a run with only inconclusive checks to
-  `exit: false` in general — but `check_provider_stability` returns `pass` whenever no transport
-  failure or approved switch was logged, which is vacuously true of an empty log too. So a
-  literally empty run still contributes one real `pass` and still exits `true`. Read the
-  per-check verdicts, not only `exit`; this is a known gap, not a silent one — see
-  `tests/test_end_to_end.py::test_a_genuinely_empty_run_still_reports_exit_true`.
 
 ---
 

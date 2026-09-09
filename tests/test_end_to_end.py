@@ -3,7 +3,7 @@
 import pytest
 
 from ctrl_a_jr.approval import ApprovalStore
-from ctrl_a_jr.evals.runner import run_evals
+from ctrl_a_jr.evals.runner import DETERMINISTIC, build_verdict, run_evals
 from ctrl_a_jr.guard import Guard
 from ctrl_a_jr.loop import run_loop
 from ctrl_a_jr.registry import Registry, ToolSpec
@@ -91,17 +91,10 @@ def test_denied_run_sends_nothing_and_gate_check_still_passes():
     assert by_id["denial_handling"]["verdict"] == "pass"
 
 
-def test_a_genuinely_empty_run_still_reports_exit_true():
-    """Known, reported gap (not silently accepted): exit is now `fail == 0 and
-    pass > 0`, intended to stop a run where nothing happened from reporting
-    `exit: true`. But `check_provider_stability` returns "pass" whenever no
-    transport failure or approved switch was logged — which is vacuously true of
-    an empty log too — so an empty run still contributes one real "pass" and
-    still exits true. Fixing that would mean either giving provider_stability its
-    own inconclusive-on-empty branch or excluding it from the pass>0 test, and
-    that redesign was not requested in this fix wave, so this test locks in and
-    documents the current (still theatrical) behaviour rather than papering over
-    it silently."""
-    verdict = run_evals(model="fake", provider="test")  # no activity logged at all
-    assert verdict["aggregate"] == {"pass": 1, "fail": 0, "inconclusive": 3}
-    assert verdict["exit"] is True
+def test_a_genuinely_empty_run_does_not_report_exit_true():
+    """Nothing ran, so nothing was verified. Green here would be the exact theatre
+    this harness exists to avoid."""
+    results = [fn([]) for fn in DETERMINISTIC]
+    verdict = build_verdict(results, model="m", provider="p")
+    assert all(r.verdict == "inconclusive" for r in results)
+    assert verdict["exit"] is False

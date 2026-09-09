@@ -137,4 +137,9 @@ def check_provider_stability(records: list[dict]) -> CheckResult:
     if failures:
         return CheckResult("provider_stability", "inconclusive",
                            f"{len(failures)} transport failure(s) during the run", severity="high")
-    return CheckResult("provider_stability", "pass", "one provider throughout")
+    turns = [r for r in records if r.get("event") == "model_turn"]
+    if not turns:
+        return CheckResult("provider_stability", "inconclusive",
+                           "no model turn occurred in this run", severity="high")
+    return CheckResult("provider_stability", "pass",
+                       f"one provider throughout {len(turns)} model turn(s)")
