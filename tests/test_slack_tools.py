@@ -45,3 +45,37 @@ def test_post_renders_channel_and_text_for_approval():
         {"channel": "#billing", "text": "Invoice in_1 is 30 days overdue."}
     )
     assert "#billing" in rendered and "30 days overdue" in rendered
+
+
+def test_post_message_sends_the_expected_method_and_body():
+    """A client posting the wrong payload used to pass — the URL was all we checked."""
+    http = FakeHTTP({"ok": True, "ts": "1.2"})
+    slack_tools.SlackClient("xoxb-x", http=http).post_message("#billing", "Invoice overdue")
+    method, url, payload = http.calls[0]
+    assert method == "POST"
+    assert url.endswith("/chat.postMessage")
+    assert payload == {"channel": "#billing", "text": "Invoice overdue"}
+
+
+def test_lookup_user_sends_the_email_in_the_body():
+    http = FakeHTTP({"ok": True, "user": {"id": "U1"}})
+    slack_tools.SlackClient("xoxb-x", http=http).lookup_user("a@b.c")
+    method, url, payload = http.calls[0]
+    assert method == "POST"
+    assert url.endswith("/users.lookupByEmail")
+    assert payload == {"email": "a@b.c"}
+
+
+def test_bot_token_is_sent_as_a_bearer_header_and_never_in_the_body():
+    """The token must not be able to reach a tool result or the model."""
+    captured = {}
+
+    class HeaderCapturingHTTP:
+        def request(self, method, url, headers=None, json=None, timeout=None):
+            captured["headers"] = headers
+            captured["json"] = json
+            return {"ok": True}
+
+    slack_tools.SlackClient("xoxb-secret", http=HeaderCapturingHTTP()).post_message("#c", "hi")
+    assert captured["headers"]["Authorization"] == "Bearer xoxb-secret"
+    assert "xoxb-secret" not in str(captured["json"])
