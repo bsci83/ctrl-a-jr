@@ -11,7 +11,7 @@ class FakeHTTP:
         self.requests = []
 
     def request(self, method, url, headers=None, data=None, timeout=None):
-        self.requests.append((method, url, data))
+        self.requests.append({"method": method, "url": url, "data": data})
         key = url.split("/v1/")[-1].split("?")[0]
         return self.responses[key]
 
@@ -43,7 +43,7 @@ def test_test_mode_key_is_required():
 def test_registers_three_read_tools_and_one_mutating():
     reg = Registry()
     stripe_tools.register_stripe_tools(reg, _client({}))
-    assert reg.mutating_names() == ["stripe_create_payment_link"]
+    assert reg.mutating_names() == ["stripe_send_invoice"]
     assert "stripe_list_failed_payments" in reg.names()
     assert "stripe_get_customer" in reg.names()
     assert "stripe_get_invoice" in reg.names()
@@ -66,3 +66,38 @@ def test_upstream_failure_becomes_error_result():
     stripe_tools.register_stripe_tools(reg, stripe_tools.StripeClient("sk_test_x", http=Boom()))
     out = reg.get("stripe_get_customer").run(customer_id="cus_1")
     assert out.ok is False and "503" in (out.error or "")
+
+
+def test_list_failed_payments_sends_the_expected_query():
+    """FakeHTTP used to discard the querystring, so nothing checked what we asked Stripe for."""
+    http = FakeHTTP({"invoices": {"data": []}})
+    stripe_tools.StripeClient("sk_test_x", http=http).list_failed_payments(limit=3)
+    url = http.requests[0]["url"]
+    assert "status=open" in url
+    assert "limit=3" in url
+
+
+def test_send_invoice_posts_to_the_right_endpoint():
+    http = FakeHTTP({"invoices/in_1/send_invoice": {"id": "in_1", "status": "open"}})
+    stripe_tools.StripeClient("sk_test_x", http=http).send_invoice("in_1")
+    req = http.requests[0]
+    assert req["method"] == "POST"
+    assert req["url"].endswith("/v1/invoices/in_1/send_invoice")
+
+
+def test_get_invoice_surfaces_the_hosted_pay_url():
+    """hosted_invoice_url is how the customer actually pays — it must reach the model."""
+    http = FakeHTTP({"invoices/in_1": {"id": "in_1", "amount_due": 4200,
+                                       "hosted_invoice_url": "https://pay.stripe.com/x"}})
+    out = stripe_tools.StripeClient("sk_test_x", http=http).get_invoice("in_1")
+    assert out["hosted_invoice_url"] == "https://pay.stripe.com/x"
+
+
+def test_non_string_key_raises_value_error_not_attribute_error():
+    with pytest.raises(ValueError):
+        stripe_tools.StripeClient(None, http=FakeHTTP({}))
+
+
+def test_key_without_trailing_underscore_is_refused():
+    with pytest.raises(ValueError):
+        stripe_tools.StripeClient("sk_testXYZ", http=FakeHTTP({}))

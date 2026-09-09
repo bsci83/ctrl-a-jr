@@ -28,7 +28,7 @@ class _Httpx:
 
 class StripeClient:
     def __init__(self, api_key: str, http: Any | None = None) -> None:
-        if not api_key.startswith("sk_test"):
+        if not isinstance(api_key, str) or not api_key.startswith("sk_test_"):
             raise ValueError(
                 "refusing to run against a non-test Stripe key: expected sk_test_*. "
                 "This agent sends real email about real invoices."
@@ -52,11 +52,12 @@ class StripeClient:
     def get_invoice(self, invoice_id: str) -> dict:
         return self._get(f"invoices/{invoice_id}")
 
-    def create_payment_link(self, invoice_id: str) -> dict:
+    def send_invoice(self, invoice_id: str) -> dict:
+        """Ask Stripe to email the customer this invoice, with its hosted pay link."""
         return self.http.request(
-            "POST", f"{API}/payment_links",
+            "POST", f"{API}/invoices/{invoice_id}/send_invoice",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            data={"line_items[0][quantity]": 1, "metadata[invoice_id]": invoice_id},
+            data={},
         )
 
 
@@ -94,11 +95,17 @@ def register_stripe_tools(registry: Registry, client: StripeClient) -> None:
         run=_wrap(lambda invoice_id: client.get_invoice(invoice_id)),
     ))
     registry.register(ToolSpec(
-        name="stripe_create_payment_link",
-        description="Create a payment link for an invoice so the customer can pay.",
+        name="stripe_send_invoice",
+        description="Ask Stripe to email the customer their invoice, which includes a hosted "
+                    "payment link. Use this only after the recovery email has been approved. "
+                    "The pay URL is already on the invoice as hosted_invoice_url if you only "
+                    "need to reference it in your own email.",
         schema={"type": "object", "properties": {"invoice_id": {"type": "string"}},
                 "required": ["invoice_id"]},
         mutating=True,
-        run=_wrap(lambda invoice_id: client.create_payment_link(invoice_id)),
-        render=lambda invoice_id: f"Create a Stripe payment link for invoice {invoice_id}",
+        run=_wrap(lambda invoice_id: client.send_invoice(invoice_id)),
+        render=lambda invoice_id: (
+            f"Stripe will EMAIL the customer their invoice {invoice_id} from your Stripe "
+            f"account, including a payment link."
+        ),
     ))
