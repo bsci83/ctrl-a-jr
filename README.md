@@ -50,6 +50,21 @@ cp .env.example .env   # fill in Stripe test key, Gmail app password, Slack bot 
 ctrl-a-jr run
 ```
 
+Before a first run, seed Stripe test-mode fixtures so there is something overdue to recover:
+
+```bash
+ctrl-a-jr fixtures seed      # 3 customers, 3 finalized past-due invoices
+ctrl-a-jr fixtures list      # what exists
+ctrl-a-jr fixtures teardown  # remove them and start clean
+```
+
+Seeding and teardown are dev tooling, not agent capability — they are deliberately not
+registered as tools, so the agent can read an invoice and ask Stripe to send it but can never
+create or delete a customer. Every seeded object is tagged `ctrl_a_jr_fixture`, and teardown
+deletes nothing without that tag. Because fixtures are reproducible, the same eval run can be
+executed N times from an identical starting state, which is the whole reason the numbers mean
+anything.
+
 `run` opens a local approvals page in your browser and starts working. Every mutating action —
 send, post, write, or provider switch — appears there for you to approve or deny before it
 happens. `ctrl-a-jr eval` scores whatever is in the activity log against the deterministic
