@@ -10,7 +10,7 @@ from __future__ import annotations
 import html
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs
 
 from .approval import ApprovalStore
 from .types import ApprovalRecord, Decision
@@ -66,6 +66,7 @@ class WebApprover:
         self._decisions: dict[str, Decision] = {}
         self._event = threading.Event()
         self._httpd: HTTPServer | None = None
+        self._stopped = False
 
     @property
     def url(self) -> str:
@@ -78,7 +79,7 @@ class WebApprover:
             def log_message(self, *a):  # keep the console clean
                 pass
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 page = render_page(approver.store.pending()).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -86,9 +87,13 @@ class WebApprover:
                 self.end_headers()
                 self.wfile.write(page)
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 length = int(self.headers.get("Content-Length", 0))
                 form = parse_qs(self.rfile.read(length).decode("utf-8"))
+                if self.path.split("?")[0] != "/resolve":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
                 approval_id = form.get("id", [""])[0]
                 decision = form.get("decision", ["denied"])[0]
                 approver._decisions[approval_id] = (
@@ -105,11 +110,21 @@ class WebApprover:
         threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
 
     def stop(self) -> None:
+        # Release anyone blocked in decide() BEFORE tearing the server down, so a
+        # waiting agent thread cannot be stranded on a decision that can no longer
+        # arrive.
+        self._stopped = True
+        self._event.set()
         if self._httpd is not None:
             self._httpd.shutdown()
+            self._httpd.server_close()
 
     def decide(self, record: ApprovalRecord) -> Decision:
         while record.id not in self._decisions:
+            if self._stopped:
+                # The approval surface is gone. Nobody can say yes, so the answer
+                # is no — an unanswerable request must never become an approval.
+                return Decision.DENIED
             self._event.wait(timeout=0.25)
             self._event.clear()
         return self._decisions.pop(record.id)

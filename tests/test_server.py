@@ -1,9 +1,9 @@
-import json
 import threading
-import urllib.request
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 
-import pytest
 from ctrl_a_jr import server
 from ctrl_a_jr.approval import ApprovalStore
 from ctrl_a_jr.types import ApprovalRecord, Decision
@@ -120,5 +120,37 @@ def test_an_unknown_decision_value_fails_closed_to_denied():
 
         t.join(timeout=5)
         assert result["decision"] is Decision.DENIED
+    finally:
+        approver.stop()
+
+
+def test_decide_fails_closed_when_the_server_is_stopped():
+    """If the approval surface goes away, nobody can say yes — so the answer is no."""
+    store, approver = _live_approver()
+    record = store.request("gmail_send", {"to": "a@b.c"}, rendered="x")
+    result = {}
+
+    def wait():
+        result["decision"] = approver.decide(record)
+
+    t = threading.Thread(target=wait, daemon=True)
+    t.start()
+    time.sleep(0.1)          # let it enter the wait loop
+    approver.stop()
+    t.join(timeout=5)
+    assert t.is_alive() is False, "decide() did not return after stop()"
+    assert result["decision"] is Decision.DENIED
+
+
+def test_post_to_an_unexpected_path_does_not_resolve_anything():
+    store, approver = _live_approver()
+    try:
+        record = store.request("gmail_send", {"to": "a@b.c"}, rendered="x")
+        data = urllib.parse.urlencode({"id": record.id, "decision": "approved"}).encode()
+        try:
+            urllib.request.urlopen(approver.url + "anything", data=data, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        assert record.id not in approver._decisions
     finally:
         approver.stop()
