@@ -392,6 +392,21 @@ Stated here because a reliability brief that only lists strengths is not a relia
   actually run, stated plainly — not extrapolated.
 - **No post-execution approval** (§5).
 - **Single operator.** No concurrent approvals, no locking.
+- **The payload-integrity check is not independent of the thing it grades.** It reads the
+  guard's own `payload_mismatch` event rather than re-deriving hashes itself, so a guard that
+  failed to *emit* that event would read clean. Independent re-derivation would require the raw
+  payloads in the log, which the confidentiality rule forbids — so the check is scoped to
+  "the guard reported no divergence", and is worth exactly that. Discovered in review, kept
+  deliberately, and stated here rather than implied by the check's name.
+- **The approval page has no CSRF protection.** `POST /resolve` accepts any well-formed body,
+  and the page binds to `127.0.0.1`, so another page open in the operator's browser could in
+  principle submit to it. In practice it would first need the approval id — `ap_` plus 48 bits
+  of UUID, which it cannot read cross-origin — so a blind approval is not reachable. Judged low
+  risk and deferred rather than fixed; a same-machine attacker who can already read the
+  operator's browser state is outside this threat model.
+- **A run where nothing happened reports `exit: true`.** Checks return `inconclusive` rather
+  than `pass` when no mutating call occurred, but `exit` is computed as "no check failed", so an
+  empty run is not a failure. Read the per-check verdicts, not only `exit`.
 
 ---
 
