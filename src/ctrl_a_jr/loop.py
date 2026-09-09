@@ -41,12 +41,23 @@ def _tool_uses(response: Any) -> list[Any]:
 
 
 def _assistant_turn(response: Any) -> dict:
+    """Rebuild the assistant turn for the message history.
+
+    Only `text` and `tool_use` blocks round-trip. Any other block type is
+    DROPPED — we cannot faithfully re-serialise a shape we do not model — but
+    the drop is logged rather than silent, because a dropped `thinking` block
+    breaks the signature chain and the resulting 400 arrives on a LATER turn,
+    far from its cause.
+    """
     blocks: list[dict] = []
     for b in response.content:
-        if b.type == "text":
+        block_type = getattr(b, "type", "")
+        if block_type == "text":
             blocks.append({"type": "text", "text": b.text})
-        elif b.type == "tool_use":
+        elif block_type == "tool_use":
             blocks.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+        else:
+            log_action("content_block_dropped", block_type=block_type or "unknown")
     return {"role": "assistant", "content": blocks}
 
 

@@ -1,4 +1,5 @@
 import pytest
+from ctrl_a_jr import activity
 from ctrl_a_jr.approval import ApprovalStore
 from ctrl_a_jr.guard import Guard
 from ctrl_a_jr.loop import run_loop
@@ -111,3 +112,16 @@ def test_denied_tool_still_returns_a_result_block():
     ])
     out = run_loop(client, guard, "sys", "go")
     assert "denied" in out.text.lower()
+
+
+def test_unrecognised_content_blocks_are_logged_not_silently_dropped():
+    """A dropped block breaks the signature chain on a LATER turn — record it now."""
+    client = ScriptedClient([
+        Msg([Block("thinking", text="hmm"),
+             Block("tool_use", name="ping", input_={}, id_="tu_a")], stop_reason="tool_use"),
+        Msg([Block("text", text="done")]),
+    ])
+    run_loop(client, _guard([]), "sys", "go")
+    dropped = [r for r in activity.read_log() if r["event"] == "content_block_dropped"]
+    assert len(dropped) == 1
+    assert dropped[0]["block_type"] == "thinking"
