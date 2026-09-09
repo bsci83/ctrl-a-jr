@@ -159,6 +159,7 @@ deliberately small (10) and hand-audited.
 | `slack_post_message` | **yes** |
 | `stripe_create_payment_link` | **yes** |
 | `write_report` | **yes** |
+| `provider_switch` (§7a) | **yes** |
 
 ### Four properties
 
@@ -266,6 +267,24 @@ Failover triggers on transport failure (connection error, 5xx, rate limit) — n
 response the model actually produced. A malformed tool call is a model behaviour to handle in
 the loop, not a reason to change models mid-conversation.
 
+### Failover is gated, not automatic
+
+**Switching providers requires human approval, through the same gate as any mutating tool.**
+There is no quiet fallback.
+
+Changing the model changes *what the agent is*. A run that begins on one model and silently
+finishes on another is a different system than the one the operator authorized, and it produces
+a transcript that cannot be reasoned about after the fact. If the thesis is "an agent you can
+authorize," the configuration is part of what is being authorized.
+
+On transport failure the run **pauses** and surfaces a `provider_switch` approval naming the
+failing provider, the error, and the proposed replacement. Approve and the run resumes on the
+new provider; deny and the run ends as `error`. Both outcomes are recorded.
+
+This costs a beat of latency on a path that should be rare. That is the correct trade: a
+fallback that fires without anyone noticing is indistinguishable from a bug, and it is exactly
+how a reliability claim rots without anyone seeing it happen.
+
 ### Failover must not corrupt the evaluation
 
 This is the trap, and it matters more than the failover itself.
@@ -295,29 +314,37 @@ only valid for the configuration it measured.
 | App | Transport | Why |
 |---|---|---|
 | **Stripe** | Direct REST, API key, test mode | Hand-rolled so at least one integration is demonstrably ours. Test mode gives replayable fixtures — the reason the eval design works. |
-| **Gmail** | Composio *or* stdlib SMTP/IMAP — decided by a pre-flight check, see below | Avoids hand-rolling a Google OAuth consent flow inside the window. |
-| **Slack** | Composio *or* bot token + `chat.postMessage` | Same. |
+| **Gmail** | stdlib `smtplib` (send) + `imaplib` (read), Google App Password | No OAuth, no broker, no third-party grant. |
+| **Slack** | Bot token + `POST chat.postMessage` | ~15 lines, no SDK. |
 
-### Transport is a build-time decision, not an abstraction
+### Why not Composio — decided on evidence, 2026-09-09
 
-Gmail and Slack are *tools*; how they reach the wire is behind that interface already. No
-adapter layer is built. One transport is chosen before the window opens, on evidence:
+Composio was the intended transport for Gmail and Slack. A pre-flight against the live API
+(`GET /api/v3/connected_accounts`, key valid, HTTP 200, nine accounts) resolved it the other
+way:
 
-**Pre-flight, due Thursday 2026-09-11.** With `COMPOSIO_API_KEY` present, confirm the `gmail`
-and `slack` toolkits have **live connected accounts** — not merely that the key authenticates.
-The two are different, and the failure is silent: an unconnected toolkit returns a generic
-`"Tool GMAIL_FETCH_EMAILS encountered an error. Please try again later."` rather than a
-distinguishable unconnected state. Observed in production previously.
+| Toolkit | Connected accounts |
+|---|---|
+| `slack` | 1 — **EXPIRED** |
+| `gmail` | 6 — 1 active, **5 expired** |
+| `github` | 2 — 1 active, 1 expired |
 
-- **Both connected →** use Composio. Faster, and the pre-flight becomes a startup probe that
-  fails loudly with the specific toolkit name.
-- **Either not connected →** stdlib. Gmail via `smtplib` + `imaplib` with a Google App
-  Password; Slack via a bot token and a plain `POST`. Both stdlib, no OAuth, roughly 45
-  minutes more work.
+Two findings, in order of importance:
 
-The stdlib path is strictly stronger on positioning — no third party holds a grant, so the
-local-first claim needs no caveat — and it is the default if the pre-flight is not completed.
-Composio has to earn its place by passing the check.
+1. **Slack had no live grant at all.** The submission requires three connected apps; this one
+   was not connected.
+2. **Seven of nine grants were expired.** That is the durable signal. A credential class that
+   expires this often is not a foundation for a system whose headline claim is reliability —
+   the one active Gmail grant may not survive to Sunday either.
+
+The check itself is the lesson worth keeping: **the key authenticated perfectly.** Any test
+that asks "does the API key work?" passes here and tells you nothing. The failure surfaces only
+at tool-call time, as a generic `"Tool GMAIL_FETCH_EMAILS encountered an error. Please try
+again later."` — indistinguishable from a transient fault. Verify the grant, not the key.
+
+Going stdlib also removes the §10 caveat: with no broker in the path, the local-first claim is
+unqualified. Cost is roughly 45 minutes of IMAP handling against a dependency that was, on
+measured evidence, the least reliable component in the design.
 
 **Fail loud, never silently no-op.** A mutating tool configured against a stub or dry-run
 backend refuses to run rather than pretending to succeed.
@@ -344,10 +371,9 @@ Stated here because a reliability brief that only lists strengths is not a relia
 
 - **The gate protects against a confused agent, not a compromised host.** Anything running as
   the operator can write the activity log or call the tools directly.
-- **The local-first claim depends on which transport wins the §8 pre-flight.** On the stdlib
-  path it is unqualified. On the Composio path it is precise but narrower: *Stripe credentials
-  and customer data stay local* — Composio would hold the Gmail and Slack grants. Whichever
-  ships, the README states the true version; the claim is not written before the check.
+- **The local-first claim is unqualified** on the shipped design (§8): no third party holds a
+  grant, and credentials plus customer data stay on the operator's machine. It would have
+  needed a caveat on the Composio path; that path was dropped on evidence.
 - **Results are model-specific.** The gate's guarantees are structural and hold behind any
   model. The measured numbers are not: they describe MiniMax at the recorded version, and a
   different model would need its own run (§7a).
