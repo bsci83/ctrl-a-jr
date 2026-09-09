@@ -129,6 +129,41 @@ def test_registry_schemas_are_anthropic_shaped():
     assert "description" in schemas[0]
 
 
+def test_approver_exception_does_not_escape_dispatch():
+    """The chokepoint never raises outward — not even when the approver fails."""
+    class Exploding:
+        def decide(self, record):
+            raise RuntimeError("approval UI died")
+
+    calls = []
+    g = Guard(_registry(calls), ApprovalStore(), Exploding())
+    out = g.dispatch("write_thing", {"to": "a@b.c"})   # must not raise
+    assert out.ok is False
+    assert "approval could not be obtained" in (out.error or "")
+    assert calls == []  # fails closed — the tool never ran
+
+
+def test_approver_exception_is_logged_with_the_approval_id():
+    class Exploding:
+        def decide(self, record):
+            raise RuntimeError("approval UI died")
+
+    g = Guard(_registry([]), ApprovalStore(), Exploding())
+    g.dispatch("write_thing", {"to": "a@b.c"})
+    refusals = [r for r in activity.read_log() if r["event"] == "tool_refused"]
+    assert refusals and refusals[-1]["reason"] == "approval_failed"
+    assert refusals[-1]["approval_id"] is not None
+
+
+def test_a_non_denied_non_approved_decision_is_labelled_accurately():
+    """A PENDING decision must not be logged as an operator denial."""
+    g = Guard(_registry([]), ApprovalStore(), Auto(Decision.PENDING))
+    out = g.dispatch("write_thing", {"to": "a@b.c"})
+    assert out.ok is False
+    refusals = [r for r in activity.read_log() if r["event"] == "tool_refused"]
+    assert refusals[-1]["reason"] == "not_approved:pending"
+
+
 def test_mutating_field_is_required():
     with pytest.raises(TypeError):
         ToolSpec(

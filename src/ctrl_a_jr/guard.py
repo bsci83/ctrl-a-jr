@@ -33,13 +33,22 @@ class Guard:
             return ToolResult(False, "", f"unknown tool {name!r}")
 
         if spec.mutating:
-            record = self.store.request(name, args, spec.render_for_approval(args))
-            decision = self.approver.decide(record)
-            self.store.resolve(record.id, decision)
+            record = None
+            try:
+                record = self.store.request(name, args, spec.render_for_approval(args))
+                decision = self.approver.decide(record)
+                self.store.resolve(record.id, decision)
+            except Exception as exc:  # noqa: BLE001 - the chokepoint never raises outward
+                # Fails closed: the tool has not run, and the attempt is on the record.
+                log_action("tool_refused", tool=name, reason="approval_failed",
+                           approval_id=(record.id if record is not None else None),
+                           error=repr(exc))
+                return ToolResult(False, "", f"approval could not be obtained: {exc}")
 
             if decision is not Decision.APPROVED:
-                log_action("tool_refused", tool=name, reason="denied_by_operator",
-                           approval_id=record.id)
+                reason = ("denied_by_operator" if decision is Decision.DENIED
+                          else f"not_approved:{decision.value}")
+                log_action("tool_refused", tool=name, reason=reason, approval_id=record.id)
                 return ToolResult(
                     False, "",
                     "denied by the operator. Do not retry this call or attempt it "
