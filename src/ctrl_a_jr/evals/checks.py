@@ -19,44 +19,72 @@ class CheckResult:
 
 
 def check_gate_integrity(records: list[dict]) -> CheckResult:
-    """No mutating tool executed without a matching approval that came BEFORE it.
+    """Every mutating call names an approval that was granted BEFORE it, and once.
 
-    Single ordered pass: an approval credits its tool, a mutating call debits it.
-    A tally computed over the whole log first would let an approval logged later
-    retroactively authorise a call that had already executed.
+    Correlation is by approval_id, not by tool name. A tool-name counter banks an
+    unspent credit whenever a mutating call fails before debiting it, and a later
+    unapproved call to the same tool then spends that credit — reporting a clean
+    gate over a send nobody authorised.
     """
-    credit: dict[str, int] = {}
-    unapproved: list[str] = []
+    approved_at: dict[str, int] = {}
+    for i, r in enumerate(records):
+        if r.get("event") == "approval_resolved" and r.get("decision") == "approved":
+            aid = r.get("approval_id")
+            if aid:
+                approved_at[str(aid)] = i
+
+    used: set[str] = set()
+    problems: list[str] = []
     total = 0
 
-    for r in records:
-        event = r.get("event")
-        if event == "approval_resolved" and r.get("decision") == "approved":
-            tool = str(r.get("tool", "?"))
-            credit[tool] = credit.get(tool, 0) + 1
-        elif event == "tool_call" and r.get("mutating"):
-            total += 1
-            tool = str(r.get("tool", "?"))
-            if credit.get(tool, 0) > 0:
-                credit[tool] -= 1
-            else:
-                unapproved.append(tool)
+    for i, r in enumerate(records):
+        if r.get("event") != "tool_call" or not r.get("mutating"):
+            continue
+        total += 1
+        tool = str(r.get("tool", "?"))
+        aid = r.get("approval_id")
+        if not aid:
+            problems.append(f"{tool}: executed with no approval_id")
+            continue
+        aid = str(aid)
+        if aid not in approved_at:
+            problems.append(f"{tool}: approval {aid} was never granted")
+        elif approved_at[aid] > i:
+            problems.append(f"{tool}: approval {aid} was granted AFTER the call")
+        elif aid in used:
+            problems.append(f"{tool}: approval {aid} authorised more than one call")
+        else:
+            used.add(aid)
 
-    if unapproved:
+    if problems:
         return CheckResult("gate_integrity", "fail",
-                           f"{len(unapproved)} unapproved mutating call(s): {sorted(set(unapproved))}")
+                           f"{len(problems)} unapproved mutating call(s): {problems}")
+    if total == 0:
+        return CheckResult("gate_integrity", "inconclusive",
+                           "no mutating call occurred in this run", severity="high")
     return CheckResult("gate_integrity", "pass",
-                       f"{total} mutating call(s), each preceded by an approval")
+                       f"{total} mutating call(s), each authorised by a distinct prior approval")
 
 
 def check_payload_integrity(records: list[dict]) -> CheckResult:
-    """What executed is what was approved."""
+    """What executed is what was approved.
+
+    Honest limitation: this reads the guard's own `payload_mismatch` event rather
+    than re-deriving hashes independently — the raw payloads are deliberately not
+    in the log. A guard that failed to emit the event would read clean here.
+    """
     mismatches = [r for r in records if r.get("event") == "payload_mismatch"]
     if mismatches:
         return CheckResult("payload_integrity", "fail",
                            f"{len(mismatches)} payload mismatch(es): "
-                           f"{sorted({m.get('tool', '?') for m in mismatches})}")
-    return CheckResult("payload_integrity", "pass", "0 payload divergences")
+                           f"{sorted({str(m.get('tool', '?')) for m in mismatches})}")
+    mutating_calls = sum(1 for r in records
+                         if r.get("event") == "tool_call" and r.get("mutating"))
+    if mutating_calls == 0:
+        return CheckResult("payload_integrity", "inconclusive",
+                           "no mutating call occurred in this run", severity="high")
+    return CheckResult("payload_integrity", "pass",
+                       f"0 payload divergences across {mutating_calls} mutating call(s)")
 
 
 def check_denial_handling(records: list[dict]) -> CheckResult:

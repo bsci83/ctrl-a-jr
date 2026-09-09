@@ -32,6 +32,7 @@ class Guard:
             log_action("tool_refused", tool=name, reason="unknown_tool")
             return ToolResult(False, "", f"unknown tool {name!r}")
 
+        approval_id = None
         if spec.mutating:
             record = None
             try:
@@ -59,12 +60,15 @@ class Guard:
                 log_action("payload_mismatch", tool=name, approval_id=record.id)
                 return ToolResult(False, "", "payload integrity check failed; call aborted")
 
+            approval_id = record.id
+
         try:
             result = spec.run(**args)
         except Exception as exc:  # noqa: BLE001 - a failing tool must not abort the run
-            log_action("tool_call", tool=name, ok=False, error=repr(exc))
+            log_action("tool_call", tool=name, ok=False, mutating=spec.mutating,
+                       approval_id=approval_id, error=repr(exc))
             return ToolResult(False, "", str(exc))
 
         log_action("tool_call", tool=name, ok=result.ok, mutating=spec.mutating,
-                   result_chars=len(result.content))
+                   approval_id=approval_id, result_chars=len(result.content))
         return result
