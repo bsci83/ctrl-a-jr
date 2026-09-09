@@ -1,0 +1,124 @@
+import json
+import threading
+import urllib.request
+import urllib.parse
+
+import pytest
+from ctrl_a_jr import server
+from ctrl_a_jr.approval import ApprovalStore
+from ctrl_a_jr.types import ApprovalRecord, Decision
+
+
+def _rec(rendered="To: a@b.c\nSubject: Overdue\n\nPlease pay $42.00."):
+    return ApprovalRecord(id="ap_1", tool="gmail_send", payload_hash="deadbeef",
+                          rendered=rendered, decision=Decision.PENDING)
+
+
+def test_page_shows_the_rendered_artifact_not_json():
+    html = server.render_page([_rec()])
+    assert "Please pay $42.00." in html
+    assert "Subject: Overdue" in html
+    assert "ap_1" in html
+
+
+def test_page_escapes_html_in_the_rendered_body():
+    html = server.render_page([_rec("<script>alert(1)</script>")])
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_page_has_approve_and_deny_controls():
+    html = server.render_page([_rec()])
+    assert "approve" in html.lower()
+    assert "deny" in html.lower()
+    assert "ap_1" in html
+
+
+def test_empty_state_renders():
+    html = server.render_page([])
+    assert "nothing waiting" in html.lower()
+
+
+# R19: Integration tests for WebApprover HTTP server
+
+def _live_approver():
+    store = ApprovalStore()
+    approver = server.WebApprover(store, port=0)
+    approver.start()
+    return store, approver
+
+
+def test_get_serves_the_pending_approval_over_http():
+    store, approver = _live_approver()
+    try:
+        store.request("gmail_send", {"to": "a@b.c"}, rendered="To: a@b.c\n\nPlease pay $42.00.")
+        with urllib.request.urlopen(approver.url, timeout=5) as r:
+            body = r.read().decode()
+        assert r.status == 200
+        assert "Please pay $42.00." in body
+    finally:
+        approver.stop()
+
+
+def test_posting_approve_unblocks_decide_with_approved():
+    store, approver = _live_approver()
+    try:
+        record = store.request("gmail_send", {"to": "a@b.c"}, rendered="x")
+        result = {}
+
+        def wait():
+            result["decision"] = approver.decide(record)
+
+        t = threading.Thread(target=wait, daemon=True)
+        t.start()
+
+        data = urllib.parse.urlencode({"id": record.id, "decision": "approved"}).encode()
+        urllib.request.urlopen(approver.url + "resolve", data=data, timeout=5)
+
+        t.join(timeout=5)
+        assert result["decision"] is Decision.APPROVED
+    finally:
+        approver.stop()
+
+
+def test_posting_deny_unblocks_decide_with_denied():
+    store, approver = _live_approver()
+    try:
+        record = store.request("gmail_send", {"to": "a@b.c"}, rendered="x")
+        result = {}
+
+        def wait():
+            result["decision"] = approver.decide(record)
+
+        t = threading.Thread(target=wait, daemon=True)
+        t.start()
+
+        data = urllib.parse.urlencode({"id": record.id, "decision": "denied"}).encode()
+        urllib.request.urlopen(approver.url + "resolve", data=data, timeout=5)
+
+        t.join(timeout=5)
+        assert result["decision"] is Decision.DENIED
+    finally:
+        approver.stop()
+
+
+def test_an_unknown_decision_value_fails_closed_to_denied():
+    """Anything that is not exactly 'approved' must not authorise a send."""
+    store, approver = _live_approver()
+    try:
+        record = store.request("gmail_send", {"to": "a@b.c"}, rendered="x")
+        result = {}
+
+        def wait():
+            result["decision"] = approver.decide(record)
+
+        t = threading.Thread(target=wait, daemon=True)
+        t.start()
+
+        data = urllib.parse.urlencode({"id": record.id, "decision": "maybe"}).encode()
+        urllib.request.urlopen(approver.url + "resolve", data=data, timeout=5)
+
+        t.join(timeout=5)
+        assert result["decision"] is Decision.DENIED
+    finally:
+        approver.stop()
