@@ -1,0 +1,23 @@
+# Activity logs contain real customer data — never commit.
+*.jsonl
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Eval output
+verdict.json
