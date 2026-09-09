@@ -35,8 +35,19 @@ class _IMAP:
 
     def _conn(self):
         c = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        c.login(self.address, self.app_password)
-        c.select("INBOX")
+        try:
+            c.login(self.address, self.app_password)
+            # readonly=True is load-bearing, not tidiness: this tool is registered
+            # mutating=False and therefore never reaches the approval gate, so it must
+            # genuinely not change state. A read-write SELECT lets FETCH set \Seen and
+            # silently marks the customer's mail as read.
+            c.select("INBOX", readonly=True)
+        except Exception:
+            try:
+                c.logout()
+            except Exception:  # noqa: BLE001 - already failing; do not mask the real error
+                pass
+            raise
         return c
 
     def search(self, from_address: str, limit: int) -> list[dict]:
@@ -51,7 +62,8 @@ class _IMAP:
     def fetch(self, uid: str) -> dict:
         c = self._conn()
         try:
-            typ, data = c.fetch(uid.encode(), "(RFC822)")
+            # BODY.PEEK[] never sets \Seen, belt-and-braces with readonly above.
+            typ, data = c.fetch(uid.encode(), "(BODY.PEEK[])")
             msg = email.message_from_bytes(data[0][1])
             if msg.is_multipart():
                 body = "".join(
