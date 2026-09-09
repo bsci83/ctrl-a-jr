@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ctrl-a-jr"
+version = "0.1.0"
+description = "A payment-recovery agent you can authorize."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Brandon Ifill" }]
+dependencies = ["anthropic>=0.40", "httpx>=0.27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+ctrl-a-jr = "ctrl_a_jr.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ctrl_a_jr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
