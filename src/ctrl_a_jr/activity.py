@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_LOG = Path.home() / ".ctrl-a" / "jr" / "activity.jsonl"
@@ -37,14 +37,16 @@ def log_action(event: str, **fields: object) -> None:
         record["event"] = event
         record["agent"] = _agent()
         record["pid"] = os.getpid()
-        record["ts"] = datetime.now(timezone.utc).isoformat()
+        record["ts"] = datetime.now(UTC).isoformat()
 
         path = log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(record, default=repr, ensure_ascii=False)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
-    except Exception:  # noqa: BLE001 - logging must never break a run
+    # Deliberate: an audit log that can abort an agent run is worse than no log.
+    # log_action is called from the security chokepoint; it must never raise.
+    except Exception:  # noqa: BLE001, S110
         pass
 
 

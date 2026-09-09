@@ -1,4 +1,5 @@
 import pytest
+
 from ctrl_a_jr import activity
 from ctrl_a_jr.approval import ApprovalStore
 from ctrl_a_jr.guard import Guard

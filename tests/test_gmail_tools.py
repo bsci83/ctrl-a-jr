@@ -1,4 +1,5 @@
 import pytest
+
 from ctrl_a_jr.registry import Registry
 from ctrl_a_jr.tools import gmail_tools
 
@@ -31,7 +32,7 @@ def _client(smtp=None, imap=None):
 def test_send_builds_a_well_formed_message():
     smtp = FakeSMTP()
     _client(smtp=smtp).send("a@b.c", "Invoice overdue", "Please pay.")
-    frm, to, raw = smtp.sent[0]
+    _frm, to, raw = smtp.sent[0]
     text = raw.decode()
     assert to == "a@b.c"
     assert "Subject: Invoice overdue" in text

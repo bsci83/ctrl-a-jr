@@ -1,4 +1,5 @@
 import pytest
+
 from ctrl_a_jr import approval
 from ctrl_a_jr.types import Decision
 

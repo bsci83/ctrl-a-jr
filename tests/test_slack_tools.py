@@ -1,4 +1,5 @@
 import pytest
+
 from ctrl_a_jr.registry import Registry
 from ctrl_a_jr.tools import slack_tools
 

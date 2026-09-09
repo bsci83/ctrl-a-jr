@@ -45,7 +45,9 @@ class _IMAP:
         except Exception:
             try:
                 c.logout()
-            except Exception:  # noqa: BLE001 - already failing; do not mask the real error
+            # Deliberate: we are already unwinding a real failure. A logout error
+            # here must not mask the original exception, which is re-raised below.
+            except Exception:  # noqa: BLE001, S110
                 pass
             raise
         return c
@@ -53,7 +55,7 @@ class _IMAP:
     def search(self, from_address: str, limit: int) -> list[dict]:
         c = self._conn()
         try:
-            typ, data = c.search(None, "FROM", from_address)
+            _typ, data = c.search(None, "FROM", from_address)
             uids = data[0].split()[-limit:] if data and data[0] else []
             return [{"uid": u.decode()} for u in uids]
         finally:
@@ -63,7 +65,7 @@ class _IMAP:
         c = self._conn()
         try:
             # BODY.PEEK[] never sets \Seen, belt-and-braces with readonly above.
-            typ, data = c.fetch(uid.encode(), "(BODY.PEEK[])")
+            _typ, data = c.fetch(uid.encode(), "(BODY.PEEK[])")
             msg = email.message_from_bytes(data[0][1])
             if msg.is_multipart():
                 body = "".join(

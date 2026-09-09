@@ -1,6 +1,7 @@
 import json
-from pathlib import Path
+
 import pytest
+
 from ctrl_a_jr import activity
 
 
