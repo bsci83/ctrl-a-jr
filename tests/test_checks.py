@@ -107,3 +107,12 @@ def test_gate_integrity_is_inconclusive_on_an_empty_log():
 
 def test_payload_integrity_is_inconclusive_when_nothing_mutating_ran():
     assert checks.check_payload_integrity([]).verdict == "inconclusive"
+
+
+def test_gate_integrity_fails_when_an_approval_for_one_tool_is_cited_by_another():
+    """An approval is for a specific action, not a token any tool may spend."""
+    log = [
+        _res("gmail_send", "a1", "approved"),
+        _call("stripe_send_invoice", approval_id="a1"),
+    ]
+    assert checks.check_gate_integrity(log).verdict == "fail"

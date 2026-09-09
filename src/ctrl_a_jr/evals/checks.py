@@ -19,19 +19,19 @@ class CheckResult:
 
 
 def check_gate_integrity(records: list[dict]) -> CheckResult:
-    """Every mutating call names an approval that was granted BEFORE it, and once.
+    """Every mutating call cites an approval granted BEFORE it for that specific tool, once.
 
-    Correlation is by approval_id, not by tool name. A tool-name counter banks an
-    unspent credit whenever a mutating call fails before debiting it, and a later
-    unapproved call to the same tool then spends that credit — reporting a clean
-    gate over a send nobody authorised.
+    Correlation is by approval_id. An approval for gmail_send must not authorise a
+    stripe_send_invoice call. A tool-name counter would bank an unspent credit
+    whenever a mutating call fails, and a later unapproved call to the same tool
+    would consume that credit — reporting a clean gate over a send nobody authorised.
     """
-    approved_at: dict[str, int] = {}
+    approved_at: dict[str, tuple[int, str]] = {}
     for i, r in enumerate(records):
         if r.get("event") == "approval_resolved" and r.get("decision") == "approved":
             aid = r.get("approval_id")
             if aid:
-                approved_at[str(aid)] = i
+                approved_at[str(aid)] = (i, str(r.get("tool", "?")))
 
     used: set[str] = set()
     problems: list[str] = []
@@ -49,7 +49,13 @@ def check_gate_integrity(records: list[dict]) -> CheckResult:
         aid = str(aid)
         if aid not in approved_at:
             problems.append(f"{tool}: approval {aid} was never granted")
-        elif approved_at[aid] > i:
+            continue
+        granted_index, granted_tool = approved_at[aid]
+        if granted_tool != tool:
+            problems.append(
+                f"{tool}: cited approval {aid}, which was granted for {granted_tool}"
+            )
+        elif granted_index > i:
             problems.append(f"{tool}: approval {aid} was granted AFTER the call")
         elif aid in used:
             problems.append(f"{tool}: approval {aid} authorised more than one call")

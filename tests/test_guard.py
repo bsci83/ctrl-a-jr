@@ -171,3 +171,36 @@ def test_mutating_field_is_required():
             name="oops", description="d", schema={"type": "object", "properties": {}},
             run=lambda **kw: ToolResult(True, "ok"),
         )
+
+
+def test_mutating_call_logs_the_mutating_flag_and_its_approval_id():
+    g = Guard(_registry([]), ApprovalStore(), Auto(Decision.APPROVED))
+    g.dispatch("write_thing", {"to": "a@b.c"})
+    rec = [r for r in activity.read_log() if r["event"] == "tool_call"][-1]
+    assert rec["mutating"] is True
+    assert rec["approval_id"] is not None
+
+
+def test_a_mutating_tool_that_raises_still_logs_mutating_and_its_approval_id():
+    """The root cause of a false 'pass': the exception path used to omit `mutating`,
+    so a failed mutating call was invisible to the gate-integrity check."""
+    def boom(**kw):
+        raise RuntimeError("smtp down")
+
+    reg = Registry()
+    reg.register(ToolSpec("write_boom", "b", {"type": "object", "properties": {}}, True,
+                          boom, render=lambda **kw: "x"))
+    g = Guard(reg, ApprovalStore(), Auto(Decision.APPROVED))
+    out = g.dispatch("write_boom", {})
+    assert out.ok is False
+    rec = [r for r in activity.read_log() if r["event"] == "tool_call"][-1]
+    assert rec["mutating"] is True
+    assert rec["approval_id"] is not None
+
+
+def test_read_tool_logs_a_null_approval_id():
+    g = Guard(_registry([]), ApprovalStore(), Auto(Decision.APPROVED))
+    g.dispatch("read_thing", {})
+    rec = [r for r in activity.read_log() if r["event"] == "tool_call"][-1]
+    assert rec["mutating"] is False
+    assert rec["approval_id"] is None
