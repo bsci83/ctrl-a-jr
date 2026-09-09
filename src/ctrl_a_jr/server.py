@@ -80,6 +80,11 @@ class WebApprover:
                 pass
 
             def do_GET(self):
+                host = (self.headers.get("Host") or "").strip()
+                if host not in (f"127.0.0.1:{approver.port}", f"localhost:{approver.port}"):
+                    self.send_response(403)
+                    self.end_headers()
+                    return
                 page = render_page(approver.store.pending()).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -88,6 +93,11 @@ class WebApprover:
                 self.wfile.write(page)
 
             def do_POST(self):
+                host = (self.headers.get("Host") or "").strip()
+                if host not in (f"127.0.0.1:{approver.port}", f"localhost:{approver.port}"):
+                    self.send_response(403)
+                    self.end_headers()
+                    return
                 length = int(self.headers.get("Content-Length", 0))
                 form = parse_qs(self.rfile.read(length).decode("utf-8"))
                 if self.path.split("?")[0] != "/resolve":

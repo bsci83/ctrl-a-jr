@@ -59,13 +59,46 @@ def test_denial_handling_fails_when_the_agent_retried_after_a_denial():
     assert r.verdict == "fail"
 
 
-def test_verdict_records_the_model_and_provider():
+def test_verdict_labels_itself_from_the_activity_log_not_the_caller():
+    """A verdict must not be able to mislabel its own subject: model/provider come
+    from the run's own `model_turn` events, and the caller's arguments are ignored
+    for the verdict body (kept only so the call signature does not break)."""
     from ctrl_a_jr.evals.runner import build_verdict
-    log = [_call("gmail_send", approval_id="a1")]
-    v = build_verdict([checks.check_payload_integrity(log)], model="MiniMax-M3", provider="minimax")
+    log = [
+        {"event": "model_turn", "provider": "minimax", "model": "MiniMax-M3"},
+        _call("gmail_send", approval_id="a1"),
+    ]
+    v = build_verdict([checks.check_payload_integrity(log)], model="claims-to-be-anything",
+                      provider="claims-to-be-anything", records=log)
     assert v["model"] == "MiniMax-M3"
     assert v["provider"] == "minimax"
+    assert v["labelled_from"] == "activity log"
     assert v["aggregate"]["pass"] == 1
+
+
+def test_verdict_labels_unknown_with_no_model_turn_events():
+    from ctrl_a_jr.evals.runner import build_verdict
+    v = build_verdict([checks.check_payload_integrity([])], model="ignored", provider="ignored")
+    assert v["model"] == "unknown"
+    assert v["provider"] == "unknown"
+
+
+def test_verdict_labels_mixed_when_more_than_one_provider_model_pair_served_the_run():
+    from ctrl_a_jr.evals.runner import build_verdict
+    log = [
+        {"event": "model_turn", "provider": "minimax", "model": "MiniMax-M3"},
+        {"event": "model_turn", "provider": "openrouter", "model": "claude-sonnet-4"},
+    ]
+    v = build_verdict([checks.check_payload_integrity(log)], model="x", provider="y", records=log)
+    assert v["provider"] == "minimax+openrouter"
+    assert v["model"] == "MiniMax-M3+claude-sonnet-4"
+
+
+def test_verdict_carries_run_id_and_commit():
+    from ctrl_a_jr.evals.runner import build_verdict
+    v = build_verdict([checks.check_payload_integrity([])], model="x", provider="y")
+    assert v["run_id"]
+    assert v["commit"]
 
 
 def test_verdict_exit_is_false_when_any_check_fails():

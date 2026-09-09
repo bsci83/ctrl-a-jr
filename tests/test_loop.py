@@ -99,6 +99,10 @@ def test_hits_max_rounds_and_forces_a_tools_off_final_turn():
     assert out.hit_limit is True
     assert out.text == "forced summary"
     assert client.tools_seen[-1] == []  # final turn offered NO tools
+    # rounds must equal the number of client.create calls actually made:
+    # 5 in the loop (all consumed the tool budget) + 1 forced tools-off final.
+    assert client.calls == 6
+    assert out.rounds == client.calls
 
 
 def test_denied_tool_still_returns_a_result_block():

@@ -1,3 +1,4 @@
+import http.client
 import threading
 import time
 import urllib.error
@@ -140,6 +141,49 @@ def test_decide_fails_closed_when_the_server_is_stopped():
     t.join(timeout=5)
     assert t.is_alive() is False, "decide() did not return after stop()"
     assert result["decision"] is Decision.DENIED
+
+
+def test_a_foreign_host_header_is_rejected_on_get():
+    """DNS rebinding: a hostile page speaking to this port under another hostname
+    must not be able to read pending approvals (ids + customer email bodies)."""
+    store, approver = _live_approver()
+    try:
+        store.request("gmail_send", {"to": "a@b.c"}, rendered="Please pay $42.00.")
+        conn = http.client.HTTPConnection(approver.host, approver.port, timeout=5)
+        try:
+            conn.putrequest("GET", "/", skip_host=True)
+            conn.putheader("Host", "evil.example.com")
+            conn.endheaders()
+            resp = conn.getresponse()
+            assert resp.status == 403
+            body = resp.read()
+            assert b"42.00" not in body
+        finally:
+            conn.close()
+    finally:
+        approver.stop()
+
+
+def test_a_foreign_host_header_is_rejected_on_post_and_does_not_resolve():
+    store, approver = _live_approver()
+    try:
+        record = store.request("gmail_send", {"to": "a@b.c"}, rendered="x")
+        data = urllib.parse.urlencode({"id": record.id, "decision": "approved"}).encode()
+        conn = http.client.HTTPConnection(approver.host, approver.port, timeout=5)
+        try:
+            conn.putrequest("POST", "/resolve", skip_host=True)
+            conn.putheader("Host", "evil.example.com")
+            conn.putheader("Content-Length", str(len(data)))
+            conn.endheaders(data)
+            resp = conn.getresponse()
+            assert resp.status == 403
+            resp.read()
+        finally:
+            conn.close()
+        assert record.id not in approver._decisions
+        assert store.get(record.id).decision.value == "pending"
+    finally:
+        approver.stop()
 
 
 def test_post_to_an_unexpected_path_does_not_resolve_anything():

@@ -8,6 +8,17 @@ def test_provider_switch_is_registered_as_mutating():
     assert "provider_switch" in reg.mutating_names()
 
 
+def test_provider_switch_is_not_offered_to_the_model():
+    """Spec 7a: failover triggers on transport failure, never on a model-produced
+    response — so the model must not be able to call this tool at all. It stays
+    dispatchable by the CLI (and therefore still gated), just not advertised."""
+    from ctrl_a_jr.registry import Registry
+    reg = Registry()
+    providers.register_provider_tools(reg, providers.ProviderState("minimax", "MiniMax-M3"))
+    assert "provider_switch" not in [s["name"] for s in reg.schemas()]
+    assert "provider_switch" in reg.mutating_names()
+
+
 def test_switch_records_the_new_provider():
     state = providers.ProviderState("minimax", "MiniMax-M3")
     from ctrl_a_jr.registry import Registry

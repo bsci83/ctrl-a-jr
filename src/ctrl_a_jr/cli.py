@@ -40,12 +40,31 @@ not attempt the same thing through a different tool."""
 USER_TASK = "Recover the most overdue open invoice."
 
 
+def load_dotenv(path: Path = Path(".env")) -> None:
+    """Minimal .env support. A real dependency is not worth it for KEY=value."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _require(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"Missing required environment variable: {name}. See .env.example.")
+    return value
+
+
 def _build(out_dir: Path) -> tuple[Registry, ProviderState]:
     reg = Registry()
-    register_stripe_tools(reg, StripeClient(os.environ["STRIPE_SECRET_KEY"]))
-    register_gmail_tools(reg, GmailClient(os.environ["GMAIL_ADDRESS"],
-                                          os.environ["GMAIL_APP_PASSWORD"]))
-    register_slack_tools(reg, SlackClient(os.environ["SLACK_BOT_TOKEN"]))
+    register_stripe_tools(reg, StripeClient(_require("STRIPE_SECRET_KEY")))
+    register_gmail_tools(reg, GmailClient(_require("GMAIL_ADDRESS"),
+                                          _require("GMAIL_APP_PASSWORD")))
+    register_slack_tools(reg, SlackClient(_require("SLACK_BOT_TOKEN")))
     register_report_tools(reg, out_dir)
     state = ProviderState(os.environ.get("CTRLA_JR_PROVIDER", "minimax"),
                           os.environ.get("CTRLA_JR_MODEL", "MiniMax-M3"))
@@ -54,6 +73,7 @@ def _build(out_dir: Path) -> tuple[Registry, ProviderState]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     parser = argparse.ArgumentParser(prog="ctrl-a-jr")
     sub = parser.add_subparsers(dest="cmd", required=True)
     run_p = sub.add_parser("run", help="run one recovery pass")

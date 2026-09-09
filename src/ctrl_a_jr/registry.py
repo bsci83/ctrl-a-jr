@@ -21,6 +21,7 @@ class ToolSpec:
     mutating: bool
     run: Callable[..., ToolResult]
     render: Callable[..., str] | None = field(default=None)
+    model_callable: bool = field(default=True)
 
     def render_for_approval(self, args: dict) -> str:
         """What the human sees. Falls back to canonical args, never nothing."""
@@ -55,4 +56,5 @@ class Registry:
         return [
             {"name": s.name, "description": s.description, "input_schema": s.schema}
             for s in (self._tools[n] for n in self.names())
+            if s.model_callable
         ]

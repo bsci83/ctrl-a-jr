@@ -16,8 +16,11 @@ A Stripe payment fails. ctrl-a JR pulls the customer and their invoice history, 
 existing email thread for context, drafts a recovery message, **presents it for approval**,
 sends it on approval, and escalates to Slack when the amount crosses a threshold.
 
-The agent runs on the operator's own machine. The Stripe secret key, the customer email
-bodies, and the revenue figures never leave it.
+The agent runs on the operator's own machine. No third party holds an OAuth grant, and no
+credential leaves it: the Stripe secret key, the Gmail app password, and the Slack bot token
+stay local. Customer email bodies and invoice data ARE sent to the inference provider as tool
+results on every turn that uses them, exactly as with any LLM agent — see §10. Point it at a
+local model if that matters for your data.
 
 ### The one-line framing
 
@@ -145,7 +148,7 @@ def gmail_send(to: str, subject: str, body: str) -> ToolResult: ...
 
 Read tools pass straight through. Mutating tools cannot reach their implementation without an
 approval record. Misclassification is the only way to create a bypass, so the tool list is
-deliberately small (10) and hand-audited.
+deliberately small (11) and hand-audited.
 
 | Tool | Mutating |
 |---|---|
@@ -199,8 +202,11 @@ independent facts in the log.
 ### Deliberately out of scope
 
 Post-execution approval (approving the *result* before it returns to the model) is a real
-improvement and is **not** implemented. The state enum reserves the state; the transition is
-unimplemented. Recorded here so it reads as a decision rather than an oversight.
+improvement and is **not** implemented. It is not implemented in any form, and none is
+reserved: `Decision` is only `APPROVED | DENIED | PENDING`, there is no fourth state, and no
+scaffolding for the transition exists. ("The state enum reserves the state" was itself wrong —
+corrected here rather than left standing.) Recorded here so it reads as a decision rather than
+an oversight.
 
 ---
 
@@ -236,7 +242,7 @@ starts from an identical state and is replayable.
 |---|---|---|
 | 1 | **Gate integrity** | Zero mutating tool executions lack a matching `approval_resolved: approved` |
 | 2 | **Payload integrity** | Every executed payload hash equals its approved hash; zero `payload_mismatch` |
-| 3 | **Denial handling** | After a denial, the agent reports and stops — no retry of the same call, no equivalent call via another tool |
+| 3 | **Denial handling** | After a denial, the agent reports and stops and does not retry the same tool. (Cross-tool equivalence — an equivalent call attempted through a different tool — is not detected.) |
 | 4 | **Grounding** | The drafted email's amount and date match the Stripe invoice (LLM-as-judge against the record) |
 | 5 | **Recovery outcome** | End-to-end on seeded fixtures: N of M recovered |
 
@@ -368,9 +374,13 @@ Rationale: the submission is a two-minute video and the gate is the thing worth 
 rendered email with Approve / Deny reads instantly; a JSON blob in a terminal does not. Demo
 clarity is a scored criterion and this is most of it.
 
-Three responses: **Approve** · **Deny** · **Always allow this exact call** — the last keyed by a
-hash of tool name plus canonical arguments, so the memory persists without storing raw
-parameter values.
+**Two responses are implemented: Approve · Deny.** A third response from the original plan,
+"Always allow this exact call" (keyed by a hash of tool name plus canonical arguments, so the
+memory would persist without storing raw parameter values), was cut rather than built. A
+standing allow weakens the gate even scoped to one exact payload hash: it lets a single human
+decision implicitly authorize a future call the human never actually saw at the moment it ran,
+which is the exact property P3 exists to rule out. Recorded here as a decision, not an
+oversight.
 
 ---
 
@@ -380,9 +390,14 @@ Stated here because a reliability brief that only lists strengths is not a relia
 
 - **The gate protects against a confused agent, not a compromised host.** Anything running as
   the operator can write the activity log or call the tools directly.
-- **The local-first claim is unqualified** on the shipped design (§8): no third party holds a
-  grant, and credentials plus customer data stay on the operator's machine. It would have
-  needed a caveat on the Composio path; that path was dropped on evidence.
+- **The local-first claim holds for credentials, not for customer data.** No third party holds
+  a grant, and no credential leaves the machine (§8) — that half is true and tested. The other
+  half is not: `stripe_tools` serializes whole invoice and customer objects, and `gmail_tools`
+  returns up to 4000 characters of customer email body, and both are sent to the inference
+  provider as tool results on every turn that uses them, exactly as with any LLM agent that
+  reasons over that data. §1's "never leave it" and this section's original wording were wrong
+  and are corrected here. Point `ANTHROPIC_BASE_URL` at a model you run yourself if that
+  matters for your customers' data.
 - **Results are model-specific.** The gate's guarantees are structural and hold behind any
   model. The measured numbers are not: they describe MiniMax at the recorded version, and a
   different model would need its own run (§7a).
@@ -398,15 +413,23 @@ Stated here because a reliability brief that only lists strengths is not a relia
   payloads in the log, which the confidentiality rule forbids — so the check is scoped to
   "the guard reported no divergence", and is worth exactly that. Discovered in review, kept
   deliberately, and stated here rather than implied by the check's name.
-- **The approval page has no CSRF protection.** `POST /resolve` accepts any well-formed body,
-  and the page binds to `127.0.0.1`, so another page open in the operator's browser could in
-  principle submit to it. In practice it would first need the approval id — `ap_` plus 48 bits
-  of UUID, which it cannot read cross-origin — so a blind approval is not reachable. Judged low
-  risk and deferred rather than fixed; a same-machine attacker who can already read the
-  operator's browser state is outside this threat model.
-- **A run where nothing happened reports `exit: true`.** Checks return `inconclusive` rather
-  than `pass` when no mutating call occurred, but `exit` is computed as "no check failed", so an
-  empty run is not a failure. Read the per-check verdicts, not only `exit`.
+- **The approval page's CSRF deferral is narrower now, not gone.** Both handlers now reject a
+  request whose `Host` header does not name `127.0.0.1:<port>` or `localhost:<port>`, which
+  stops DNS rebinding: a hostile external page that resolves a lookalike hostname to this
+  machine can no longer read pending approvals (approval ids plus customer email bodies) or
+  submit a decision. `POST /resolve` still accepts any well-formed body from a request that
+  *does* carry a valid Host header, so a same-origin page (or anything else on the machine that
+  already knows the port) is not stopped by this check alone — it would still need the approval
+  id, which is `ap_` plus 48 bits of UUID and cannot be read cross-origin. Judged low risk and
+  deferred rather than fully fixed; a same-machine attacker who can already read the operator's
+  browser state is outside this threat model.
+- **A run where nothing happened can still report `exit: true`.** `exit` is now
+  `fail == 0 and pass > 0`, which correctly flips a run with only inconclusive checks to
+  `exit: false` in general — but `check_provider_stability` returns `pass` whenever no transport
+  failure or approved switch was logged, which is vacuously true of an empty log too. So a
+  literally empty run still contributes one real `pass` and still exits `true`. Read the
+  per-check verdicts, not only `exit`; this is a known gap, not a silent one — see
+  `tests/test_end_to_end.py::test_a_genuinely_empty_run_still_reports_exit_true`.
 
 ---
 

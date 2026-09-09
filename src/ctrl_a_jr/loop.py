@@ -72,6 +72,8 @@ def run_loop(
     tools = guard.registry.schemas()
 
     for round_index in range(max_rounds):
+        log_action("model_turn", provider=getattr(client, "provider", "unknown"),
+                   model=getattr(client, "model", "unknown"), round=round_index + 1)
         response = client.create(system=system, messages=messages, tools=tools)
         uses = _tool_uses(response)
 
@@ -94,5 +96,7 @@ def run_loop(
 
     # Invariant 1: the boundary turn offers NO tools, so nothing can dangle.
     log_action("round_limit_reached", max_rounds=max_rounds)
+    log_action("model_turn", provider=getattr(client, "provider", "unknown"),
+               model=getattr(client, "model", "unknown"), round=max_rounds + 1)
     final = client.create(system=system, messages=messages, tools=[])
     return LoopResult(_text_of(final), max_rounds + 1, hit_limit=True)

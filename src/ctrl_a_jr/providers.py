@@ -4,6 +4,12 @@ Failover is NOT automatic. Changing the model changes what the agent is, and a
 run that begins on one model and silently finishes on another is not the system
 the operator authorized. `provider_switch` is a mutating tool, so it goes
 through the same gate as sending an email.
+
+Spec 7a: failover triggers on transport failure, never on a response the model
+actually produced — so the model must never be able to call this itself.
+`model_callable=False` keeps it out of `registry.schemas()` (what the model is
+offered) while leaving it in `registry.mutating_names()` (still dispatchable,
+and gated, from the CLI's transport-failure handler).
 """
 
 from __future__ import annotations
@@ -26,11 +32,12 @@ class AnthropicCompatClient:
     """Anthropic SDK against any Anthropic-compatible base URL (MiniMax, OpenRouter)."""
 
     def __init__(self, api_key: str, base_url: str | None, model: str,
-                 max_tokens: int = 2048) -> None:
+                 provider: str, max_tokens: int = 2048) -> None:
         import anthropic
 
         self._client = anthropic.Anthropic(api_key=api_key, base_url=base_url or None)
         self.model = model
+        self.provider = provider
         self.max_tokens = max_tokens
 
     def create(self, system: str, messages: list[dict], tools: list[dict]) -> Any:
@@ -51,11 +58,13 @@ def client_from_env(state: ProviderState) -> AnthropicCompatClient:
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1",
             model=state.model,
+            provider="openrouter",
         )
     return AnthropicCompatClient(
         api_key=os.environ["ANTHROPIC_API_KEY"],
         base_url=os.environ.get("ANTHROPIC_BASE_URL") or None,
         model=state.model,
+        provider=state.provider,
     )
 
 
@@ -74,6 +83,7 @@ def register_provider_tools(registry: Registry, state: ProviderState) -> None:
                                "reason": {"type": "string"}},
                 "required": ["provider", "model", "reason"]},
         mutating=True,
+        model_callable=False,
         run=switch,
         render=lambda provider, model, reason: (
             f"Switch inference from {state.provider}/{state.model} to {provider}/{model}\n\n"

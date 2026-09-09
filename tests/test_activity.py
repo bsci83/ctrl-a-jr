@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -21,12 +22,18 @@ def test_appends_one_json_object_per_line(log):
 
 
 def test_caller_keys_do_not_clobber_attribution(log):
-    # An audit log a caller can forge is not evidence.
+    # An audit log a caller can forge is not evidence. Positive assertions: `!=`
+    # against the forged values passes for literally any real value, so assert
+    # the actual expected attribution instead.
     activity.log_action("tool_call", tool="x", agent="somebody-else", pid=1, ts="1999")
     rec = json.loads(log.read_text(encoding="utf-8").strip())
-    assert rec["agent"] != "somebody-else"
-    assert rec["pid"] != 1
+    assert rec["agent"] == "ctrl-a-jr"
+    assert rec["pid"] == os.getpid()
     assert rec["ts"] != "1999"
+    # and it must actually be a recent ISO timestamp, not just "not the forged value"
+    from datetime import UTC, datetime
+    parsed = datetime.fromisoformat(rec["ts"])
+    assert (datetime.now(UTC) - parsed).total_seconds() < 60
 
 
 def test_read_log_returns_dicts(log):
