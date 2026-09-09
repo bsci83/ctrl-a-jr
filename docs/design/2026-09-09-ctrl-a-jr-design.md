@@ -158,16 +158,17 @@ deliberately small (10) and hand-audited.
 | `gmail_send` | **yes** |
 | `slack_post_message` | **yes** |
 | `stripe_send_invoice` | **yes** |
-
-> **Changed during implementation (2026-09-09).** This row read `stripe_create_payment_link`
-> until a review found the planned call could not work: Stripe's Payment Links endpoint requires
-> a Price id, so a link cannot be minted from a bare amount. The pay URL already exists read-only
-> on the invoice as `hosted_invoice_url`, so the mutating capability payment recovery actually
-> wants is "ask Stripe to email the customer their invoice" — `POST /v1/invoices/{id}/send_invoice`.
-> Recorded here rather than quietly swapped, because a spec that disagrees with the code is worse
-> than no spec.
 | `write_report` | **yes** |
 | `provider_switch` (§7a) | **yes** |
+
+> **Changed during implementation (2026-09-09).** The last mutating row read
+> `stripe_create_payment_link` until a review found the planned call could not work: Stripe's
+> Payment Links endpoint requires a Price id, so a link cannot be minted from a bare amount, and
+> the plan's own interface line declared an `amount_cents` parameter its code block omitted. The
+> pay URL already exists read-only on the invoice as `hosted_invoice_url`, so the mutating
+> capability payment recovery actually wants is "ask Stripe to email the customer their invoice" —
+> `POST /v1/invoices/{id}/send_invoice`. Recorded here rather than swapped quietly, because a spec
+> that disagrees with the code is worse than no spec.
 
 ### Four properties
 
