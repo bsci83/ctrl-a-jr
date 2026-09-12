@@ -51,3 +51,16 @@ def test_never_raises_on_unserialisable_payload(log):
     activity.log_action("tool_call", tool="x", blob=object())
     rec = json.loads(log.read_text(encoding="utf-8").strip())
     assert rec["tool"] == "x"
+
+
+def test_a_test_run_never_writes_to_the_real_activity_log():
+    """Regression guard for the pollution found 2026-09-12.
+
+    Six test files wrote to ~/.ctrl-a/jr/activity.jsonl because they never
+    redirected it — 312 phantom records at ~8 per pytest run. Nothing failed,
+    because the checks ignore an orphan approval_requested. The evidence stream
+    the evals read was quietly contaminated for three days.
+
+    conftest.py now redirects autouse. This pins that it stays redirected.
+    """
+    assert activity.log_path() != activity.DEFAULT_LOG
