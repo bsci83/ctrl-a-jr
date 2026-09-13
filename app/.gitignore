@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Real run data, copied in from web/evidence.json at build time. Never
+# committed — same reason web/.gitignore excludes it.
+public/evidence.json

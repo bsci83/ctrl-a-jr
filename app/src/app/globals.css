@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+/* ============================================================
+   GRAPHITE — ported from ctrl-a's workspace UI so this reads as
+   the same family of product. Same token names, same surface
+   ladder, same OKLCH model, same --hue knob.
+   Source: ctrl-a-workspace-ui/src/app/globals.css (read-only ref).
+   ============================================================ */
+
+:root {
+  --hue: 285;
+
+  --surface-lowest: oklch(0 0 0);
+  --surface: oklch(0.1 0 0);
+  --surface-container: oklch(0.17 0.005 0);
+  --surface-high: oklch(0.21 0.005 0);
+  --surface-bright: oklch(0.26 0 0);
+
+  --on-surface: oklch(0.91 0.005 0);
+  --on-surface-variant: oklch(0.67 0.005 0);
+  --on-surface-muted: oklch(0.45 0.005 0);
+
+  --primary: oklch(0.55 0.25 var(--hue));
+  --primary-bright: oklch(0.75 0.2 var(--hue));
+  --primary-container: oklch(0.3 0.2 var(--hue));
+  --primary-muted: oklch(0.55 0.25 var(--hue) / 0.15);
+
+  --success: oklch(0.7 0.2 145);
+  --success-surface: oklch(0.2 0.06 145);
+  --warning: oklch(0.78 0.18 75);
+  --warning-surface: oklch(0.22 0.06 75);
+  --error: oklch(0.65 0.25 25);
+  --error-surface: oklch(0.2 0.08 25);
+  --info: oklch(0.68 0.18 220);
+  --info-surface: oklch(0.18 0.06 220);
+
+  /* `inconclusive` is NOT a paler pass. It gets its own slate-blue ink and a
+     dashed edge everywhere it appears, so an unexercised check can never be
+     mistaken for a green one at a glance. */
+  --unknown: oklch(0.68 0.04 250);
+  --unknown-surface: oklch(0.2 0.02 250);
+
+  --outline: oklch(0.4 0 0 / 0.18);
+  --outline-variant: oklch(0.32 0 0 / 0.12);
+  --outline-focus: var(--primary);
+
+  --shadow-color: oklch(0.55 0.25 var(--hue) / 0.06);
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --surface-lowest: oklch(0.96 0 0);
+  --surface: oklch(0.98 0 0);
+  --surface-container: oklch(0.95 0 0);
+  --surface-high: oklch(0.92 0 0);
+  --surface-bright: oklch(0.88 0 0);
+
+  --on-surface: oklch(0.15 0.005 0);
+  --on-surface-variant: oklch(0.4 0.005 0);
+  --on-surface-muted: oklch(0.55 0.005 0);
+
+  --primary: oklch(0.45 0.25 var(--hue));
+  --primary-bright: oklch(0.55 0.2 var(--hue));
+  --primary-container: oklch(0.35 0.2 var(--hue));
+  --primary-muted: oklch(0.45 0.25 var(--hue) / 0.1);
+
+  --success: oklch(0.55 0.2 145);
+  --success-surface: oklch(0.92 0.04 145);
+  --warning: oklch(0.65 0.18 75);
+  --warning-surface: oklch(0.92 0.04 75);
+  --error: oklch(0.55 0.25 25);
+  --error-surface: oklch(0.92 0.06 25);
+  --info: oklch(0.52 0.18 220);
+  --info-surface: oklch(0.92 0.04 220);
+
+  --unknown: oklch(0.45 0.05 250);
+  --unknown-surface: oklch(0.93 0.02 250);
+
+  --outline: oklch(0.7 0 0 / 0.2);
+  --outline-variant: oklch(0.8 0 0 / 0.15);
+
+  --shadow-color: oklch(0.3 0.05 var(--hue) / 0.08);
+
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-surface-lowest: var(--surface-lowest);
+  --color-surface: var(--surface);
+  --color-surface-container: var(--surface-container);
+  --color-surface-high: var(--surface-high);
+  --color-surface-bright: var(--surface-bright);
+
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-on-surface-muted: var(--on-surface-muted);
+
+  --color-primary: var(--primary);
+  --color-primary-bright: var(--primary-bright);
+  --color-primary-muted: var(--primary-muted);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-info: var(--info);
+  --color-unknown: var(--unknown);
+
+  --color-outline: var(--outline);
+  --color-outline-variant: var(--outline-variant);
+
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", monospace;
+
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+}
+
+html,
+body {
+  background: var(--surface);
+  color: var(--on-surface);
+  /* The body must never scroll sideways; wide things get their own scroller. */
+  overflow-x: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer utilities {
+  .ghost-border {
+    border: 1px solid var(--outline);
+  }
+
+  .label-caps {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--on-surface-variant);
+  }
+
+  /* Wide content (event tables, long tool names) scrolls inside itself. */
+  .scroll-x {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+}
+
+::selection {
+  background: var(--primary-muted);
+}
+
+:focus-visible {
+  outline: 2px solid var(--outline-focus);
+  outline-offset: 2px;
+}
