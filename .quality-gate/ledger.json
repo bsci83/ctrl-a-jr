@@ -2,7 +2,7 @@
   "schema": "quality-gate/ledger.v1",
   "cycle": 1,
   "spec_hash": "d869dc8d78d18714",
-  "updated_at": "2026-09-13T05:52:09.794509+00:00",
+  "updated_at": "2026-09-13T06:28:58.291588+00:00",
   "findings": [
     {
       "id": "F-7f5fb4ae",
@@ -12,9 +12,11 @@
       "line": 58,
       "finding_class": "imap-crlf-injection",
       "tier": 1,
-      "status": "open",
+      "status": "closed",
       "title": "C1 IMAP command injection: model-supplied from_address/uid concatenated raw by imaplib (_command: data = data + b' ' + arg, no CRLF filter). Reachable via 4000 chars of attacker email returned by gmail_read_thread. Tool is mutating=False so the gate never runs.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "1e1a0f4-era: _safe_address/_safe_uid at the GmailClient layer + readonly SELECT + BODY.PEEK"
     },
     {
       "id": "F-2bc08926",
@@ -36,9 +38,11 @@
       "line": 65,
       "finding_class": "log-underreport",
       "tier": 1,
-      "status": "open",
+      "status": "closed",
       "title": "C3 Three silent under-report paths: log write swallowed; malformed line dropped on read; tool_call logged AFTER spec.run with no BaseException guard. No pre-write intent record, no hash chain.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "3961546: write failures leave an .errors breadcrumb, malformed lines counted, unsound log forces exit:false"
     },
     {
       "id": "F-d1a3887c",
@@ -48,9 +52,11 @@
       "line": 41,
       "finding_class": "trusts-mutating-flag",
       "tier": 1,
-      "status": "open",
+      "status": "closed",
       "title": "C4 check_gate_integrity skips any tool_call lacking `mutating`; a gmail_send execution reads as inconclusive, not fail. Verified by execution.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "b2d85cb: mutating set corroborated from approval events, not the audited flag"
     },
     {
       "id": "F-2d29e513",
@@ -60,9 +66,11 @@
       "line": 82,
       "finding_class": "denominator-overstates",
       "tier": 1,
-      "status": "open",
+      "status": "closed",
       "title": "C5 roll_up 'a pass anywhere is a pass' + runs=len(groups): 9 read-only runs + 1 approved send reports runs:10, gate_integrity pass. Verified by execution.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "b2d85cb: denominator is runs that exercised the check"
     },
     {
       "id": "F-5751e1e2",
@@ -72,9 +80,11 @@
       "line": 73,
       "finding_class": "openrouter-url-doubled",
       "tier": 2,
-      "status": "open",
+      "status": "closed",
       "title": "H1 OpenRouter base_url yields https://openrouter.ai/api/v1/v1/messages. The entire spec 7a failover path cannot succeed; the retry also raises outside the handler.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "providers.py base_url no longer double-prefixes /v1; retry wrapped and re-stamped"
     },
     {
       "id": "F-c0e00640",
@@ -84,9 +94,11 @@
       "line": 96,
       "finding_class": "denial-passes-vacuously",
       "tier": 2,
-      "status": "open",
+      "status": "closed",
       "title": "H2 A denial as the final event auto-passes check 3. write_report is last in the system prompt. A machine denial (stop() while pending) also flips it to pass.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "1663640: denial handling requires a later turn; machine denials excluded by approval_id"
     },
     {
       "id": "F-0daa15b4",
@@ -96,9 +108,11 @@
       "line": 164,
       "finding_class": "no-frame-protection",
       "tier": 2,
-      "status": "open",
+      "status": "closed",
       "title": "H3 No X-Frame-Options / CSP frame-ancestors. Clickjacking defeats the gate without reading an approval id, refuting the bound stated in spec section 10.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "server.py sends X-Frame-Options/CSP frame-ancestors/Referrer-Policy on both handlers"
     },
     {
       "id": "F-fecd7028",
@@ -108,9 +122,11 @@
       "line": 0,
       "finding_class": "out-dir-not-ignored",
       "tier": 2,
-      "status": "open",
+      "status": "closed",
       "title": "H5 out/ not gitignored; model-authored reports contain customer names, emails, invoice amounts. Also section 6 claims bodies are logged by hash \u2014 only counts exist.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "out/ gitignored"
     },
     {
       "id": "F-7f70178b",
@@ -120,9 +136,11 @@
       "line": 254,
       "finding_class": "unearned-headline-claim",
       "tier": 1,
-      "status": "open",
+      "status": "closed",
       "title": "Spec section 7 presents '0 unapproved mutating actions, 0 payload divergences' as 'each backed by the log'. No run has occurred. README states this correctly; the spec does not.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "1d9b986: \u00a77 headline claim now states its three qualifiers (guard-detected, conclusive runs, named model)"
     },
     {
       "id": "F-4754eb65",
@@ -132,9 +150,11 @@
       "line": 0,
       "finding_class": "five-vs-four-checks",
       "tier": 2,
-      "status": "open",
+      "status": "closed",
       "title": "Spec sections 2 and 7 claim five checks; four are implemented. grounding and recovery_outcome absent. check_provider_stability ships but is undocumented.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "1d9b986: \u00a72 and \u00a77 say four checks; grounding and recovery outcome listed as NOT IMPLEMENTED"
     },
     {
       "id": "F-9e4ecd19",
@@ -144,9 +164,11 @@
       "line": 0,
       "finding_class": "tool-decorator-fiction",
       "tier": 3,
-      "status": "open",
+      "status": "closed",
       "title": "Spec section 5's only code sample (@tool(mutating=True)) does not exist; real mechanism is ToolSpec + Registry.register.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "1d9b986: \u00a75 code sample replaced with the real ToolSpec registration; the decorator fiction is named"
     },
     {
       "id": "F-6a96385c",
@@ -156,9 +178,11 @@
       "line": 0,
       "finding_class": "threshold-unimplemented",
       "tier": 3,
-      "status": "open",
+      "status": "closed",
       "title": "Spec section 1 asserts Slack threshold escalation as working; no threshold in src/; section 13.2 lists it as open.",
-      "first_seen_cycle": 1
+      "first_seen_cycle": 1,
+      "closed_cycle": 1,
+      "closed_by": "1d9b986: \u00a71 labels the Slack threshold as prompt guidance, not an enforced rule"
     },
     {
       "id": "F-fa2c560a",
