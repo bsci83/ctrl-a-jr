@@ -9,6 +9,7 @@ that carries a customer's words through this page comes out of
 from __future__ import annotations
 
 import html
+import os
 
 from .sanitize import sanitize_artifact
 from .store import Record
@@ -53,6 +54,24 @@ def _shell(title: str, inner: str) -> str:
     )
 
 
+def _console_link() -> str:
+    """A way back.
+
+    The approval page lives on a different origin from the console, so deciding
+    something navigated the operator off the product with no route back — a dead
+    end found while rehearsing the demo. The console keeps polling and picks the
+    decision up on its own; this link just returns you to it.
+    """
+    url = (os.environ.get("CTRLA_JR_CONSOLE_URL") or "").strip()
+    if not url.startswith("https://"):
+        return ""
+    return (
+        f'<p class="meta"><a href="{html.escape(url, quote=True)}" '
+        'style="color:#1a7f37;font-weight:600;text-decoration:none">'
+        "← Back to the console</a> — it has already picked this up.</p>"
+    )
+
+
 def _decided_note(rec: Record) -> str:
     who = html.escape(rec.decided_by or "unknown")
     when = html.escape(rec.decided_at or "")
@@ -76,7 +95,7 @@ def render_approval(rec: Record, nonce: str) -> str:
         inner = (
             "<h1>ctrl-a JR</h1>"
             f'<div class="card"><div class="tool">{html.escape(rec.tool)}</div>'
-            f"{_decided_note(rec)}{artifact}{meta}</div>"
+            f"{_decided_note(rec)}{artifact}{meta}{_console_link()}</div>"
         )
         return _shell("ctrl-a JR — decided", inner)
 
