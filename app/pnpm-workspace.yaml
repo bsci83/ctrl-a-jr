@@ -1,0 +1,6 @@
+# pnpm asks whether to run each dependency's install scripts. `sharp` is Next's
+# optional native image optimiser; this app renders no images through
+# next/image, so its build script is declined rather than left undecided — an
+# unanswered prompt makes `pnpm install` non-deterministic between machines.
+allowBuilds:
+  sharp: false
