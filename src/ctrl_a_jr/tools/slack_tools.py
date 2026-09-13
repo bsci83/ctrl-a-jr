@@ -14,7 +14,9 @@ destination. The channel is configuration; only the text is the model's.
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from typing import Any
 
 import httpx
@@ -23,6 +25,47 @@ from ..registry import Registry, ToolSpec
 from ..types import ToolResult
 
 API = "https://slack.com/api"
+
+# Slack rejects the whole message when one section's text exceeds 3000
+# characters (invalid_blocks), so an over-long customer email would silently
+# cost the operator the approval card entirely. Truncate on our side, and SAY
+# the text was cut — an approver who cannot tell they are reading a fragment is
+# approving something they have not seen.
+SECTION_TEXT_LIMIT = 3000
+_TRUNCATION_NOTICE = "\n\n[truncated — open the approval page to read the full text]"
+
+APPROVE_ACTION_ID = "ctrla_jr_approve"
+DENY_ACTION_ID = "ctrla_jr_deny"
+
+# An HTML tag specifically — a name, then either `>` or attributes — NOT the
+# blanket `<[^>]+>`. That version also swallowed `<https://evil|Click here>`,
+# deleting attacker text from the card instead of neutering it, which loses the
+# operator the very thing they are being asked to judge.
+_TAG = re.compile(r"</?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?/?>")
+_BLANKS = re.compile(r"\n{3,}")
+
+
+def to_block_text(raw: str) -> str:
+    """Make arbitrary, attacker-influenced text safe to put in a Block Kit section.
+
+    The body of an approval card is quoted from a customer's own email. Two
+    separate hazards: the local approval surface renders HTML, so a rendering
+    may arrive here carrying tags (stripped, then unescaped once — never twice,
+    which would resurrect an escaped tag); and Slack's own parser treats
+    `&`, `<` and `>` as markup, so `<https://evil|Click here>` in a customer
+    body would otherwise become a real disguised link inside the card an
+    operator is about to trust.
+    """
+    text = _TAG.sub(" ", str(raw))
+    text = html.unescape(text)
+    text = _BLANKS.sub("\n\n", text).strip()
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def truncate_for_block(text: str, limit: int = SECTION_TEXT_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - len(_TRUNCATION_NOTICE))] + _TRUNCATION_NOTICE
 
 
 class _Httpx:
@@ -67,6 +110,44 @@ class SlackClient:
         """Destination comes from configuration. There is deliberately no channel
         parameter — a caller cannot pass one, so no model output can reach it."""
         return self._call("chat.postMessage", {"channel": self.channel, "text": text})
+
+    def approval_blocks(self, approval_id: str, tool: str, rendered: str) -> list[dict]:
+        """Block Kit for one pending approval. Pure, so it can be asserted on."""
+        body = truncate_for_block(to_block_text(rendered))
+        return [
+            {"type": "section", "text": {"type": "mrkdwn",
+                                         "text": f"*ctrl-a JR wants to run* `{tool}`"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            {"type": "context", "elements": [
+                {"type": "mrkdwn", "text": f"approval `{approval_id}`"}]},
+            {"type": "actions", "elements": [
+                # The button VALUE is the approval id and nothing else. The
+                # decision lives in the action_id, which the model never sees and
+                # cannot author — a value carrying "approve" would let anyone who
+                # can forge a payload name their own outcome.
+                {"type": "button", "action_id": APPROVE_ACTION_ID,
+                 "style": "primary", "value": approval_id,
+                 "text": {"type": "plain_text", "text": "Approve"}},
+                {"type": "button", "action_id": DENY_ACTION_ID,
+                 "style": "danger", "value": approval_id,
+                 "text": {"type": "plain_text", "text": "Deny"}},
+            ]},
+        ]
+
+    def post_approval_request(self, approval_id: str, tool: str, rendered: str) -> dict:
+        """Ask for an approval in Slack.
+
+        NOT an agent tool, and deliberately not registered: a model able to post
+        its own approval request is self-approval with one extra hop. This is
+        called by RemoteApprover, from inside the gate. The destination is still
+        configuration — there is no channel parameter here either.
+        """
+        return self._call("chat.postMessage", {
+            "channel": self.channel,
+            # Fallback for notifications and clients that cannot render blocks.
+            "text": f"ctrl-a JR needs approval for {tool} ({approval_id})",
+            "blocks": self.approval_blocks(approval_id, tool, rendered),
+        })
 
 
 def register_slack_tools(registry: Registry, client: SlackClient) -> None:

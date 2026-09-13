@@ -18,7 +18,12 @@ from typing import Any, Protocol
 from .activity import log_action
 from .guard import Guard
 
-MAX_ROUNDS = 5
+# 5 was one round short of the real task. A live run spent an extra round on a
+# second gmail_read_thread and hit round_limit_reached before it could write its
+# report, so the operator got a forced summary instead of the artifact. The
+# boundary behaviour is unchanged — invariant 1 still issues a final turn with no
+# tools; only the budget moved.
+MAX_ROUNDS = 8
 
 
 class ModelClient(Protocol):

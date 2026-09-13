@@ -13,6 +13,7 @@ from uuid import uuid4
 from . import activity
 from .activity import log_action
 from .approval import ApprovalStore
+from .approver_remote import RemoteApprover
 from .evals.runner import run_evals
 from .guard import Guard
 from .loop import run_loop
@@ -85,6 +86,46 @@ def _build(out_dir: Path) -> tuple[Registry, ProviderState]:
     return reg, state
 
 
+APPROVER_ENV = "CTRLA_JR_APPROVER"
+APPROVAL_API_ENV = "CTRLA_JR_APPROVAL_API"
+PUSH_TOKEN_ENV = "CTRLA_JR_PUSH_TOKEN"
+
+
+def _make_approver(store: ApprovalStore, mode: str, port: int):
+    """Pick the approval surface. Local is the default and stays the default.
+
+    The local page is the path that has actually gated live sends, so it is what
+    you get unless someone asks for the deployed one by name. Selecting remote
+    requires its configuration to be PRESENT, checked here: falling back to local
+    because a variable was unset would silently move the authorization boundary
+    without telling anyone.
+    """
+    if mode == "remote":
+        approver = RemoteApprover(
+            api_base=_require(APPROVAL_API_ENV),
+            push_token=_require(PUSH_TOKEN_ENV),
+            # The card is posted from inside the gate, never registered as a tool.
+            slack=SlackClient(_require("SLACK_BOT_TOKEN"),
+                              _require("CTRLA_JR_SLACK_CHANNEL")),
+        )
+        banner = [f"Approvals: {approver.url} (deployed surface; this machine "
+                  "accepts no inbound connection)"]
+        return approver, banner, None
+
+    if mode != "local":
+        # argparse only validates the flag, not the env default behind it. A typo
+        # in CTRLA_JR_APPROVER must not quietly choose a surface for you.
+        raise SystemExit(
+            f"Unknown approver {mode!r}. Set {APPROVER_ENV} (or --approver) to "
+            "'local' or 'remote'."
+        )
+    approver = WebApprover(store, port=port)
+    banner = [f"Approvals: {approver.authed_url}"]
+    if approver.token_is_generated:
+        banner.append(f"  (generated approval token; set {TOKEN_ENV} to pin your own)")
+    return approver, banner, approver.authed_url
+
+
 def _fixtures(action: str) -> int:
     """Dev tooling. Deliberately NOT registered as agent tools — the agent may read
     invoices and ask Stripe to send them, never create or delete a customer."""
@@ -117,6 +158,12 @@ def main(argv: list[str] | None = None) -> int:
     run_p = sub.add_parser("run", help="run one recovery pass")
     run_p.add_argument("--out", default="./out", type=Path)
     run_p.add_argument("--port", default=8765, type=int)
+    run_p.add_argument(
+        "--approver", choices=["local", "remote"],
+        default=(os.environ.get(APPROVER_ENV, "local").strip().lower() or "local"),
+        help="where approvals are answered: the local page (default) or the "
+             "deployed API this agent pushes to and polls.",
+    )
     eval_p = sub.add_parser("eval", help="score the activity log")
     eval_p.add_argument("--out", default="verdict.json", type=Path)
     fx_p = sub.add_parser("fixtures", help="seed / list / tear down Stripe test fixtures")
@@ -144,15 +191,15 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     registry, state = _build(args.out)
     store = ApprovalStore()
-    approver = WebApprover(store, port=args.port)
+    approver, banner, open_url = _make_approver(store, args.approver, args.port)
     approver.start()
-    # Printed ONCE, and only here. The bare URL 404s without the token, so the
-    # operator needs the whole link — including when the surface is tunnelled and
-    # the host part has to be swapped for the public one (scripts/tunnel.md).
-    print(f"Approvals: {approver.authed_url}")
-    if approver.token_is_generated:
-        print(f"  (generated approval token; set {TOKEN_ENV} to pin your own)")
-    webbrowser.open(approver.authed_url)
+    # Printed ONCE, and only here. The bare local URL 404s without the token, so
+    # the operator needs the whole link — including when the surface is tunnelled
+    # and the host part has to be swapped for the public one (scripts/tunnel.md).
+    for line in banner:
+        print(line)
+    if open_url:
+        webbrowser.open(open_url)
     try:
         guard = Guard(registry, store, approver)
         try:
