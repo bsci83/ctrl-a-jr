@@ -4,10 +4,13 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 
-# Real run data, copied in from web/evidence.json at build time. Never
 # committed — same reason web/.gitignore excludes it.
-public/evidence.json
 
 # Local secrets. Never committed.
 .env*.local
 .vercel
+
+# public/evidence.json IS committed: it is the demo's data, it is
+# allowlist-redacted (no credential, no recipient, no body), and the
+# console cannot render Channels or Verdict without it. A page that
+# says 'no evidence loaded' is correct and looks broken.
