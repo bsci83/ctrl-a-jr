@@ -62,13 +62,19 @@ def _live_approver():
     return store, approver
 
 
+def _resolve_url(approver, path="resolve"):
+    """Every request to the live server now has to carry the approval token; the
+    surface 404s without it (tests/test_server_auth.py covers that directly)."""
+    return f"{approver.url}{path}?{server.TOKEN_PARAM}={approver.token}"
+
+
 def test_get_serves_the_pending_approval_over_http():
     store, approver = _live_approver()
     try:
         store.request("gmail_send",
                       {"to": "a@b.c", "subject": "Overdue", "body": "Please pay $42.00."},
                       rendered="To: a@b.c\n\nPlease pay $42.00.")
-        with urllib.request.urlopen(approver.url, timeout=5) as r:
+        with urllib.request.urlopen(approver.authed_url, timeout=5) as r:
             body = r.read().decode()
         assert r.status == 200
         assert "Please pay $42.00." in body
@@ -90,7 +96,7 @@ def test_posting_approve_unblocks_decide_with_approved():
         t.start()
 
         data = urllib.parse.urlencode({"id": record.id, "decision": "approved"}).encode()
-        urllib.request.urlopen(approver.url + "resolve", data=data, timeout=5)
+        urllib.request.urlopen(_resolve_url(approver), data=data, timeout=5)
 
         t.join(timeout=5)
         assert result["decision"] is Decision.APPROVED
@@ -111,7 +117,7 @@ def test_posting_deny_unblocks_decide_with_denied():
         t.start()
 
         data = urllib.parse.urlencode({"id": record.id, "decision": "denied"}).encode()
-        urllib.request.urlopen(approver.url + "resolve", data=data, timeout=5)
+        urllib.request.urlopen(_resolve_url(approver), data=data, timeout=5)
 
         t.join(timeout=5)
         assert result["decision"] is Decision.DENIED
@@ -133,7 +139,7 @@ def test_an_unknown_decision_value_fails_closed_to_denied():
         t.start()
 
         data = urllib.parse.urlencode({"id": record.id, "decision": "maybe"}).encode()
-        urllib.request.urlopen(approver.url + "resolve", data=data, timeout=5)
+        urllib.request.urlopen(_resolve_url(approver), data=data, timeout=5)
 
         t.join(timeout=5)
         assert result["decision"] is Decision.DENIED
@@ -208,7 +214,7 @@ def test_post_to_an_unexpected_path_does_not_resolve_anything():
         record = store.request("gmail_send", {"to": "a@b.c"}, rendered="x")
         data = urllib.parse.urlencode({"id": record.id, "decision": "approved"}).encode()
         try:
-            urllib.request.urlopen(approver.url + "anything", data=data, timeout=5)
+            urllib.request.urlopen(_resolve_url(approver, "anything"), data=data, timeout=5)
         except urllib.error.HTTPError as exc:
             assert exc.code == 404
         assert record.id not in approver._decisions

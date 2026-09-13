@@ -8,9 +8,12 @@ escapes it — the body is attacker-influenced content from a customer thread.
 from __future__ import annotations
 
 import html
+import os
+import secrets
 import threading
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from .activity import log_action, read_log
 from .approval import ApprovalStore
@@ -41,6 +44,58 @@ button{font:14px system-ui;padding:9px 20px;border-radius:6px;border:0;
 .act.gate{color:#8a6d3b;border-color:#f0e0b8;background:#fdf6e3;font-weight:600}
 .runid{font:11px ui-monospace,monospace;color:#9a9a9a;margin:0 0 8px}
 """
+
+
+# The approval surface is the authorization boundary of the whole product. Bound
+# to localhost it needed no secret; put behind a public tunnel so a judge can
+# drive it, an unauthenticated POST /resolve lets anyone holding the URL approve
+# a real email and a real Stripe invoice. The token is what makes the public URL
+# an address rather than a capability.
+TOKEN_ENV = "CTRLA_JR_APPROVAL_TOKEN"
+TOKEN_PARAM = "t"
+TOKEN_COOKIE = "ctrla_jr_token"
+
+
+def _token_from_cookie(header: str | None) -> str | None:
+    if not header:
+        return None
+    try:
+        jar = SimpleCookie()
+        jar.load(header)
+    except CookieError:
+        # A malformed Cookie header is an unauthenticated request, not a crash.
+        return None
+    morsel = jar.get(TOKEN_COOKIE)
+    return morsel.value if morsel is not None else None
+
+
+def _supplied_tokens(path: str, headers) -> list[str]:
+    """Every place a caller may present the token, in the order they are accepted.
+
+    Three channels because one pasted link has to work end to end: `?t=` carries
+    the first GET, the cookie it sets carries the form POST that follows, and the
+    bearer header serves anything scripted.
+    """
+    found: list[str] = []
+    query = parse_qs(urlsplit(path).query)
+    found.extend(v for v in query.get(TOKEN_PARAM, []) if v)
+
+    auth = (headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        found.append(auth[7:].strip())
+
+    cookie = _token_from_cookie(headers.get("Cookie"))
+    if cookie:
+        found.append(cookie)
+    return found
+
+
+def token_matches(supplied: str, expected: str) -> bool:
+    """Constant-time compare. `==` on a secret leaks its prefix one byte at a
+    time to anyone who can measure the response, and over a public tunnel that
+    measurement is available to the whole internet. Compared as bytes because
+    compare_digest rejects non-ASCII str."""
+    return secrets.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
 
 
 ICONS = {
@@ -134,9 +189,15 @@ def render_page(records: list[ApprovalRecord], events: list[dict] | None = None)
 class WebApprover:
     """Blocks the agent until a human clicks. One operator, one decision at a time."""
 
-    def __init__(self, store: ApprovalStore, host: str = "127.0.0.1", port: int = 8765) -> None:
+    def __init__(self, store: ApprovalStore, host: str = "127.0.0.1", port: int = 8765,
+                 token: str | None = None) -> None:
         self.store = store
         self.host, self.port = host, port
+        env_token = (os.environ.get(TOKEN_ENV) or "").strip()
+        # Generated rather than defaulted-off: a secret you have to opt into is a
+        # secret that is absent the one time the surface is exposed.
+        self.token = token or env_token or secrets.token_urlsafe(32)
+        self.token_is_generated = not (token or env_token)
         self._decisions: dict[str, Decision] = {}
         self._event = threading.Event()
         self._httpd: HTTPServer | None = None
@@ -146,6 +207,11 @@ class WebApprover:
     def url(self) -> str:
         return f"http://{self.host}:{self.port}/"
 
+    @property
+    def authed_url(self) -> str:
+        """The link the operator actually opens. Without `?t=` the page 404s."""
+        return f"{self.url}?{TOKEN_PARAM}={self.token}"
+
     def start(self) -> None:
         approver = self
 
@@ -153,15 +219,61 @@ class WebApprover:
             def log_message(self, *a):  # keep the console clean
                 pass
 
+            def _authorised(self) -> bool:
+                """True only on an exact, constant-time token match.
+
+                Returns the verdict; the caller decides the response, because GET
+                and POST have to drain and answer differently.
+                """
+                supplied = _supplied_tokens(self.path, self.headers)
+                return any(token_matches(s, approver.token) for s in supplied)
+
+            def _reject_unauthorised(self) -> None:
+                # 404, not 401/403: over a public tunnel a 401 confirms that an
+                # approval surface lives here and invites a guessing campaign. An
+                # unauthenticated caller learns only that the path is nothing.
+                #
+                # The path and whether a token was offered are logged. The token
+                # VALUE never is — a near-miss written to the evidence file would
+                # put attacker-controlled guesses, and one day the real secret via
+                # a copy-paste, into the artifact we hand to reviewers.
+                log_action(
+                    "approval_auth_failed",
+                    method=self.command,
+                    path=urlsplit(self.path).path,
+                    token_supplied=bool(_supplied_tokens(self.path, self.headers)),
+                )
+                body = b"Not Found"
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_GET(self):
                 host = (self.headers.get("Host") or "").strip()
                 if host not in (f"127.0.0.1:{approver.port}", f"localhost:{approver.port}"):
                     self.send_response(403)
                     self.end_headers()
                     return
+                if not self._authorised():
+                    self._reject_unauthorised()
+                    return
                 page = render_page(approver.store.pending(), read_log()).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                # The pasted link carries the token once; the cookie carries it to
+                # the POST that follows. HttpOnly keeps it out of reach of any
+                # script that lands on the page; SameSite=Strict means a hostile
+                # page cannot make the browser spend it on a cross-site POST.
+                self.send_header(
+                    "Set-Cookie",
+                    f"{TOKEN_COOKIE}={approver.token}; Path=/; HttpOnly; SameSite=Strict",
+                )
                 # A framed approval page can be clickjacked without the attacker
                 # ever reading an approval id — the Host check passes from inside
                 # an iframe. One operator click on a decoy approves a real send.
@@ -193,6 +305,14 @@ class WebApprover:
                     self.send_response(404)
                     self.end_headers()
                     return
+                # /resolve is the ONLY mutating route on this server, and this is
+                # the authorization check for it. It sits above the point where a
+                # decision is recorded, so an unauthenticated POST cannot reach
+                # _decisions at all — a 404 that still approved the send would be
+                # the exact hole the token exists to close.
+                if not self._authorised():
+                    self._reject_unauthorised()
+                    return
                 approval_id = form.get("id", [""])[0]
                 decision = form.get("decision", ["denied"])[0]
                 approver._decisions[approval_id] = (
@@ -202,7 +322,11 @@ class WebApprover:
                 self.send_response(303)
                 self.send_header("X-Frame-Options", "DENY")
                 self.send_header("Referrer-Policy", "no-referrer")
-                self.send_header("Location", "/")
+                # The token travels back in the redirect as well as the cookie.
+                # A browser that refuses the cookie (third-party-cookie blocking
+                # applies to a tunnelled origin) would otherwise bounce the
+                # operator from a successful approval straight into a 404.
+                self.send_header("Location", f"/?{TOKEN_PARAM}={approver.token}")
                 self.end_headers()
 
         self._httpd = HTTPServer((self.host, self.port), Handler)

@@ -23,6 +23,11 @@ packages = ["src/ctrl_a_jr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Test the checkout the tests live in. An editable install resolves `ctrl_a_jr`
+# to whichever clone was installed, so in a git worktree pytest silently
+# exercised the OTHER working tree and reported green on code that was not the
+# code under edit.
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

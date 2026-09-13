@@ -18,7 +18,7 @@ from .guard import Guard
 from .loop import run_loop
 from .providers import ProviderState, client_from_env, register_provider_tools
 from .registry import Registry
-from .server import WebApprover
+from .server import TOKEN_ENV, WebApprover
 from .tools.gmail_tools import GmailClient, register_gmail_tools
 from .tools.report_tools import register_report_tools
 from .tools.slack_tools import SlackClient, register_slack_tools
@@ -145,8 +145,13 @@ def main(argv: list[str] | None = None) -> int:
     store = ApprovalStore()
     approver = WebApprover(store, port=args.port)
     approver.start()
-    print(f"Approvals: {approver.url}")
-    webbrowser.open(approver.url)
+    # Printed ONCE, and only here. The bare URL 404s without the token, so the
+    # operator needs the whole link — including when the surface is tunnelled and
+    # the host part has to be swapped for the public one (scripts/tunnel.md).
+    print(f"Approvals: {approver.authed_url}")
+    if approver.token_is_generated:
+        print(f"  (generated approval token; set {TOKEN_ENV} to pin your own)")
+    webbrowser.open(approver.authed_url)
     try:
         guard = Guard(registry, store, approver)
         try:
