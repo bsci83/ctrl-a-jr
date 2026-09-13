@@ -10,3 +10,4 @@ public/evidence.json
 
 # Local secrets. Never committed.
 .env*.local
+.vercel
