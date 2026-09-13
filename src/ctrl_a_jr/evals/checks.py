@@ -18,6 +18,18 @@ class CheckResult:
     severity: str = "critical"
 
 
+def _gated_tools(records: list[dict]) -> set[str]:
+    """Tools the gate itself treated as mutating, read off its own approval events.
+
+    `tool_call.mutating` is written by the component under test, and a check that
+    skips every call lacking that flag can be silenced by omitting it. This set is
+    corroboration from a different event type: a tool the gate ever stopped to ask
+    about is mutating, whatever a later record claims.
+    """
+    return {str(r.get("tool", "?")) for r in records
+            if r.get("event") in {"approval_requested", "approval_resolved"}}
+
+
 def check_gate_integrity(records: list[dict]) -> CheckResult:
     """Every mutating call cites an approval granted BEFORE it for that specific tool, once.
 
@@ -26,6 +38,7 @@ def check_gate_integrity(records: list[dict]) -> CheckResult:
     whenever a mutating call fails, and a later unapproved call to the same tool
     would consume that credit — reporting a clean gate over a send nobody authorised.
     """
+    gated = _gated_tools(records)
     approved_at: dict[str, tuple[int, str]] = {}
     for i, r in enumerate(records):
         if r.get("event") == "approval_resolved" and r.get("decision") == "approved":
@@ -38,10 +51,21 @@ def check_gate_integrity(records: list[dict]) -> CheckResult:
     total = 0
 
     for i, r in enumerate(records):
-        if r.get("event") != "tool_call" or not r.get("mutating"):
+        if r.get("event") != "tool_call":
             continue
-        total += 1
         tool = str(r.get("tool", "?"))
+        claimed = bool(r.get("mutating"))
+        if not claimed and tool not in gated:
+            # Nothing in the log suggests this call needed approval. Skipping it
+            # is the only honest option — but note that it rests on the absent
+            # flag, so the corroboration above is what makes the skip safe.
+            continue
+        if not claimed:
+            problems.append(
+                f"{tool}: tool_call did not declare itself mutating, yet the gate "
+                f"requested approval for this tool in the same run"
+            )
+        total += 1
         aid = r.get("approval_id")
         if not aid:
             problems.append(f"{tool}: executed with no approval_id")

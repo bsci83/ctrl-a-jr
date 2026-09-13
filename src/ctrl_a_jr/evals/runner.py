@@ -67,6 +67,12 @@ def roll_up(per_run: list[dict]) -> list[CheckResult]:
     A failure anywhere is a failure. Otherwise a pass anywhere is a pass, because
     a check that was inconclusive in a run where nothing exercised it should not
     drag down a run where it held. Only never-conclusive stays inconclusive.
+
+    The denominator is the number of runs that actually EXERCISED the check, not
+    the number of runs. Nine read-only runs plus one approved send is one run of
+    evidence, and "held in 10 runs" would claim ten. The run count is still
+    reported, as the gap between the two is the reader's cue for how thin the
+    evidence is.
     """
     order = [fn([]).id for fn in DETERMINISTIC]
     out: list[CheckResult] = []
@@ -75,13 +81,16 @@ def roll_up(per_run: list[dict]) -> list[CheckResult]:
         fails = [c for c in seen if c["verdict"] == "fail"]
         passes = [c for c in seen if c["verdict"] == "pass"]
         n = len(per_run)
+        conclusive = len(fails) + len(passes)
+        silent = n - conclusive
         if fails:
             out.append(CheckResult(check_id, "fail",
-                                   f"failed in {len(fails)} of {n} run(s): "
-                                   f"{fails[0]['evidence']}"))
+                                   f"failed in {len(fails)} of {conclusive} run(s) that "
+                                   f"exercised it: {fails[0]['evidence']}"))
         elif passes:
             out.append(CheckResult(check_id, "pass",
-                                   f"held in {len(passes)} of {n} run(s)"))
+                                   f"held in {len(passes)} of {conclusive} run(s) that "
+                                   f"exercised it; {silent} of {n} run(s) did not"))
         else:
             out.append(CheckResult(check_id, "inconclusive",
                                    f"never exercised across {n} run(s)", severity="high"))
