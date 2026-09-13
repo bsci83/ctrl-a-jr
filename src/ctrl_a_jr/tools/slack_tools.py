@@ -44,6 +44,11 @@ DENY_ACTION_ID = "ctrla_jr_deny"
 _TAG = re.compile(r"</?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?/?>")
 _BLANKS = re.compile(r"\n{3,}")
 
+# Slack's own identifier shapes, for `post_reply`. A channel id (C…/G…/D…) or a
+# #name; a message ts is `1700000000.000100`.
+_CHANNEL_REF = re.compile(r"^(#[A-Za-z0-9._-]{1,80}|[CGD][A-Z0-9]{2,32})$")
+_TS = re.compile(r"^\d{1,20}\.\d{1,20}$")
+
 
 def to_block_text(raw: str) -> str:
     """Make arbitrary, attacker-influenced text safe to put in a Block Kit section.
@@ -110,6 +115,38 @@ class SlackClient:
         """Destination comes from configuration. There is deliberately no channel
         parameter — a caller cannot pass one, so no model output can reach it."""
         return self._call("chat.postMessage", {"channel": self.channel, "text": text})
+
+    def post_reply(self, channel: str, thread_ts: str | None, text: str,
+                   blocks: list[dict] | None = None) -> dict:
+        """Answer an inbound Slack event in the thread it arrived on.
+
+        This is the ONE place a channel is a parameter, and it is not a hole in
+        spec invariant 4. `post_message` and `post_approval_request` above still
+        have no channel parameter, so nothing the MODEL produces can reach a
+        destination. The channel and thread here come from a Slack event whose
+        v0 signature was verified before it was parsed — Slack's claim about
+        where a human spoke, not the agent's claim about where to speak.
+
+        Callers must therefore pass values taken straight off the event. The
+        shape check below is a tripwire for that rule, not a security boundary:
+        a channel id that does not look like one is a sign the value came from
+        somewhere else, and failing here is better than posting there.
+        """
+        channel = (channel or "").strip()
+        if not _CHANNEL_REF.match(channel):
+            raise ValueError(
+                "reply channel must come from the inbound Slack event "
+                "(a channel id like C0123 or D0123)"
+            )
+        payload: dict = {"channel": channel, "text": text}
+        if thread_ts:
+            thread_ts = str(thread_ts).strip()
+            if not _TS.match(thread_ts):
+                raise ValueError("thread_ts must come from the inbound Slack event")
+            payload["thread_ts"] = thread_ts
+        if blocks:
+            payload["blocks"] = blocks
+        return self._call("chat.postMessage", payload)
 
     def approval_blocks(self, approval_id: str, tool: str, rendered: str) -> list[dict]:
         """Block Kit for one pending approval. Pure, so it can be asserted on."""
