@@ -1,0 +1,30 @@
+{
+  "spec_source": "docs/design/2026-09-09-ctrl-a-jr-design.md",
+  "project_type": "python-cli-agent",
+  "audits": [
+    "tool-reality",
+    "gate-integrity",
+    "evidence-integrity"
+  ],
+  "_audits_note": "Default audits (reality-audit/app-audit/scanner) are Next.js-specific and do not apply. Substituted with equivalents for a Python CLI agent: are the tools real, does the gate hold, is the evidence log trustworthy.",
+  "blind_cold_check": {
+    "enabled": true
+  },
+  "cross_family_verifier": {
+    "enabled": true,
+    "model_family": "minimax-hermes",
+    "fallback_on_unavailable": "fail"
+  },
+  "exit_criteria": {
+    "max_tier_1": 0,
+    "max_tier_2": 5,
+    "max_regressions_per_cycle": 0,
+    "require_blind_cold_pass": true,
+    "require_spec_pass": true,
+    "require_cross_family_pass": true,
+    "require_runtime_pass": true
+  },
+  "loop_safety": {
+    "max_cycles": 25
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "schema": "quality-gate/verdict.v1",
+  "cycle": 1,
+  "spec_hash": "d869dc8d78d18714",
+  "spec_drift": false,
+  "exit": false,
+  "reasons": [
+    "6 tier-1 findings open",
+    "cross-family verifier unreachable (WSL has no distributions)",
+    "spec acceptance unevaluable: 0 AC-ids, no test-map.json",
+    "runtime verification incomplete: 3 of 5 integrations never hit a live endpoint"
+  ],
+  "ledger": {
+    "open": [
+      "F-7f5fb4ae",
+      "F-2bc08926",
+      "F-1c2aa051",
+      "F-d1a3887c",
+      "F-2d29e513",
+      "F-5751e1e2",
+      "F-c0e00640",
+      "F-0daa15b4",
+      "F-fecd7028",
+      "F-7f70178b",
+      "F-4754eb65",
+      "F-9e4ecd19",
+      "F-6a96385c",
+      "F-fa2c560a"
+    ],
+    "closed_this_cycle": [],
+    "regressed_this_cycle": [],
+    "new_this_cycle": [
+      "F-7f5fb4ae",
+      "F-2bc08926",
+      "F-1c2aa051",
+      "F-d1a3887c",
+      "F-2d29e513",
+      "F-5751e1e2",
+      "F-c0e00640",
+      "F-0daa15b4",
+      "F-fecd7028",
+      "F-7f70178b",
+      "F-4754eb65",
+      "F-9e4ecd19",
+      "F-6a96385c",
+      "F-fa2c560a"
+    ],
+    "disputed": []
+  },
+  "spec_acceptance": {
+    "passed": [],
+    "failed": [],
+    "untested": [
+      "no AC-ids defined"
+    ]
+  },
+  "cross_family": {
+    "status": "unavailable",
+    "override": "documented fallback used: cold blind-eval + adversarial pressure test (blind-spot), per feedback_crossfamily_unverifiable_fallback"
+  },
+  "blocking_findings": [
+    {
+      "id": "F-7f5fb4ae",
+      "tier": 1,
+      "file": "src/ctrl_a_jr/tools/gmail_tools.py:58",
+      "title": "C1 IMAP command injection: model-supplied from_address/uid concatenated raw by imaplib (_c",
+      "source_audit": "adversary/input-validation"
+    },
+    {
+      "id": "F-2bc08926",
+      "tier": 1,
+      "file": "src/ctrl_a_jr/tools/gmail_tools.py:143",
+      "title": "C2 Spec invariant 4 ('scope is never taken from the model') has no implementation. to/invo",
+      "source_audit": "adversary/authority"
+    },
+    {
+      "id": "F-1c2aa051",
+      "tier": 1,
+      "file": "src/ctrl_a_jr/activity.py:65",
+      "title": "C3 Three silent under-report paths: log write swallowed; malformed line dropped on read; t",
+      "source_audit": "adversary/evidence"
+    },
+    {
+      "id": "F-d1a3887c",
+      "tier": 1,
+      "file": "src/ctrl_a_jr/evals/checks.py:41",
+      "title": "C4 check_gate_integrity skips any tool_call lacking `mutating`; a gmail_send execution rea",
+      "source_audit": "adversary/eval"
+    },
+    {
+      "id": "F-2d29e513",
+      "tier": 1,
+      "file": "src/ctrl_a_jr/evals/runner.py:82",
+      "title": "C5 roll_up 'a pass anywhere is a pass' + runs=len(groups): 9 read-only runs + 1 approved s",
+      "source_audit": "adversary/eval"
+    },
+    {
+      "id": "F-7f70178b",
+      "tier": 1,
+      "file": "docs/design/2026-09-09-ctrl-a-jr-design.md:254",
+      "title": "Spec section 7 presents '0 unapproved mutating actions, 0 payload divergences' as 'each ba",
+      "source_audit": "evaluator/doc-drift"
+    }
+  ],
+  "next_actions": [
+    "DECIDE C2: delete spec invariant 4, or implement server-side scope re-derivation",
+    "FIX C1: validate from_address/uid before imaplib (CRLF, quotes, braces)",
+    "FIX unearned headline claim in spec section 7",
+    "FIX H1 OpenRouter base_url (one character)",
+    "FIX H3 X-Frame-Options + CSP on both handlers (two lines)",
+    "FIX H5 add out/ to .gitignore (one line)",
+    "FIX C4 cross-reference tool name against known-mutating set",
+    "FIX C5 report the conclusive denominator, not the run count"
+  ]
+}

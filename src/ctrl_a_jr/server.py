@@ -12,7 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
 
-from .activity import read_log
+from .activity import log_action, read_log
 from .approval import ApprovalStore
 from .artifacts import STYLE as ARTIFACT_STYLE
 from .artifacts import render_artifact
@@ -162,6 +162,15 @@ class WebApprover:
                 page = render_page(approver.store.pending(), read_log()).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                # A framed approval page can be clickjacked without the attacker
+                # ever reading an approval id — the Host check passes from inside
+                # an iframe. One operator click on a decoy approves a real send.
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Content-Security-Policy",
+                                 "frame-ancestors 'none'; default-src 'none'; "
+                                 "style-src 'unsafe-inline'")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(page)))
                 self.end_headers()
                 self.wfile.write(page)
@@ -191,6 +200,8 @@ class WebApprover:
                 )
                 approver._event.set()
                 self.send_response(303)
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Referrer-Policy", "no-referrer")
                 self.send_header("Location", "/")
                 self.end_headers()
 
@@ -214,6 +225,14 @@ class WebApprover:
             if self._stopped:
                 # The approval surface is gone. Nobody can say yes, so the answer
                 # is no — an unanswerable request must never become an approval.
+                #
+                # But record that this was a MACHINE denial. A human denying a
+                # send and the server shutting down are the same Decision and
+                # very different evidence: without this marker, Ctrl-C with an
+                # approval pending flips denial_handling from inconclusive to
+                # pass, and the agent gets credit for behaviour nobody observed.
+                log_action("approval_auto_denied", approval_id=record.id,
+                           tool=record.tool, reason="approver_stopped")
                 return Decision.DENIED
             self._event.wait(timeout=0.25)
             self._event.clear()

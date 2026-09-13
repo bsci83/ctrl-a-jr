@@ -11,12 +11,44 @@ from __future__ import annotations
 import email
 import imaplib
 import json
+import re
 import smtplib
 from email.message import EmailMessage
 from typing import Any
 
 from ..registry import Registry, ToolSpec
 from ..types import ToolResult
+
+# imaplib concatenates command arguments raw — `data = data + b' ' + arg` in
+# IMAP4._command, with no CRLF filtering — then sends the line terminated by
+# CRLF. So a line break inside an argument is not escaped: it terminates
+# the current command and begins a new one. That matters more here than
+# anywhere else in this codebase: the
+# search/read tools are classified read-only and therefore BYPASS the approval
+# gate, and their arguments come from a model that has just been fed up to 4000
+# characters of customer-authored email. Injected text -> new IMAP commands ->
+# STORE +FLAGS (\Deleted) / EXPUNGE / APPEND, ungated and unlogged.
+#
+# Validate before imaplib sees it. Refuse rather than escape: these two fields
+# have narrow, checkable shapes, and a refusal is a tool error the model can
+# read, not a silent mangling.
+_ADDRESS_RE = re.compile(r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,255}\.[A-Za-z]{2,24}$")
+_UID_RE = re.compile(r"^[0-9]{1,20}$")
+
+
+def _safe_address(value: object) -> str:
+    if not isinstance(value, str) or not _ADDRESS_RE.match(value):
+        raise ValueError(
+            "refusing to search: from_address must be a plain email address. "
+            "Control characters and IMAP syntax are not accepted."
+        )
+    return value
+
+
+def _safe_uid(value: object) -> str:
+    if not isinstance(value, str) or not _UID_RE.match(value):
+        raise ValueError("refusing to fetch: uid must be digits only.")
+    return value
 
 
 class _SMTP:
@@ -55,7 +87,7 @@ class _IMAP:
     def search(self, from_address: str, limit: int) -> list[dict]:
         c = self._conn()
         try:
-            _typ, data = c.search(None, "FROM", from_address)
+            _typ, data = c.search(None, "FROM", _safe_address(from_address))
             uids = data[0].split()[-limit:] if data and data[0] else []
             return [{"uid": u.decode()} for u in uids]
         finally:
@@ -65,7 +97,7 @@ class _IMAP:
         c = self._conn()
         try:
             # BODY.PEEK[] never sets \Seen, belt-and-braces with readonly above.
-            _typ, data = c.fetch(uid.encode(), "(BODY.PEEK[])")
+            _typ, data = c.fetch(_safe_uid(uid).encode(), "(BODY.PEEK[])")
             msg = email.message_from_bytes(data[0][1])
             if msg.is_multipart():
                 body = "".join(
@@ -88,10 +120,13 @@ class GmailClient:
         self.imap = imap or _IMAP(address, app_password)
 
     def search_threads(self, from_address: str, limit: int = 5) -> list[dict]:
-        return self.imap.search(from_address, limit)
+        # Validated HERE, not only inside _IMAP: a fake or alternate transport
+        # would otherwise skip the guard entirely. This is the layer the tool
+        # calls, so it is the layer that must hold.
+        return self.imap.search(_safe_address(from_address), limit)
 
     def read_thread(self, uid: str) -> dict:
-        return self.imap.fetch(uid)
+        return self.imap.fetch(_safe_uid(uid))
 
     def send(self, to: str, subject: str, body: str) -> dict:
         msg = EmailMessage()

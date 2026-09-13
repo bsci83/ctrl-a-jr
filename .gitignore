@@ -19,5 +19,8 @@ venv/
 dist/
 build/
 
+# Agent-authored run reports: customer names, addresses, invoice amounts.
+out/
+
 # Eval output
 verdict.json

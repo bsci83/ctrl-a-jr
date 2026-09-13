@@ -8,7 +8,9 @@ import os
 import sys
 import webbrowser
 from pathlib import Path
+from uuid import uuid4
 
+from . import activity
 from .activity import log_action
 from .approval import ApprovalStore
 from .evals.runner import run_evals
@@ -163,7 +165,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"\n{state.provider} is unreachable and the switch was not approved. "
                       "Stopping.")
                 return 1
-            result = run_loop(client_from_env(state), guard, SYSTEM, USER_TASK)
+            # A fresh run id for the retry. The two passes ran on different
+            # providers, so they are different configurations; sharing one id
+            # makes a denial in pass 1 followed by an approval in pass 2 read
+            # as the agent retrying after a refusal.
+            activity.RUN_ID = uuid4().hex[:12]
+            log_action("provider_switched", provider=state.provider, model=state.model)
+            try:
+                result = run_loop(client_from_env(state), guard, SYSTEM, USER_TASK)
+            except Exception as retry_exc:  # noqa: BLE001 - the fallback failed too
+                # Previously this raised outside the handler and crashed with a
+                # traceback after the operator had already approved the switch.
+                log_action("provider_transport_failure", provider=state.provider,
+                           error=repr(retry_exc))
+                print(f"\nThe fallback provider also failed: {retry_exc}")
+                return 1
         print("\n" + result.text)
     finally:
         approver.stop()

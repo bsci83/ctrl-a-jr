@@ -70,7 +70,10 @@ def client_from_env(state: ProviderState) -> AnthropicCompatClient:
     if state.provider == "openrouter":
         return AnthropicCompatClient(
             api_key=_require_key("OPENROUTER_API_KEY"),
-            base_url="https://openrouter.ai/api/v1",
+            # The Anthropic SDK appends /v1/messages itself. Including /v1 here
+            # produced https://openrouter.ai/api/v1/v1/messages — a 404, meaning
+            # the entire spec 7a failover path could never have succeeded.
+            base_url="https://openrouter.ai/api",
             model=state.model,
             provider="openrouter",
         )

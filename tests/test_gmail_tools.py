@@ -31,17 +31,17 @@ def _client(smtp=None, imap=None):
 
 def test_send_builds_a_well_formed_message():
     smtp = FakeSMTP()
-    _client(smtp=smtp).send("a@b.c", "Invoice overdue", "Please pay.")
+    _client(smtp=smtp).send("a@b.co", "Invoice overdue", "Please pay.")
     _frm, to, raw = smtp.sent[0]
     text = raw.decode()
-    assert to == "a@b.c"
+    assert to == "a@b.co"
     assert "Subject: Invoice overdue" in text
     assert "Please pay." in text
 
 
 def test_search_threads_respects_limit():
     imap = FakeIMAP(results=[{"uid": "1"}, {"uid": "2"}, {"uid": "3"}])
-    assert len(_client(imap=imap).search_threads("a@b.c", limit=2)) == 2
+    assert len(_client(imap=imap).search_threads("a@b.co", limit=2)) == 2
 
 
 def test_read_thread_returns_body():
@@ -62,9 +62,9 @@ def test_send_renders_the_actual_message_for_approval():
     reg = Registry()
     gmail_tools.register_gmail_tools(reg, _client())
     rendered = reg.get("gmail_send").render_for_approval(
-        {"to": "a@b.c", "subject": "Overdue", "body": "Please pay $42.00."}
+        {"to": "a@b.co", "subject": "Overdue", "body": "Please pay $42.00."}
     )
-    assert "a@b.c" in rendered
+    assert "a@b.co" in rendered
     assert "Overdue" in rendered
     assert "Please pay $42.00." in rendered
 
@@ -76,7 +76,7 @@ def test_smtp_failure_becomes_error_result():
 
     reg = Registry()
     gmail_tools.register_gmail_tools(reg, _client(smtp=Boom()))
-    out = reg.get("gmail_send").run(to="a@b.c", subject="s", body="b")
+    out = reg.get("gmail_send").run(to="a@b.co", subject="s", body="b")
     assert out.ok is False and "auth failed" in (out.error or "")
 
 
@@ -111,17 +111,17 @@ class _ProbeIMAP(gmail_tools._IMAP):
 
 def test_imap_search_on_an_empty_mailbox_returns_no_uids():
     conn = _FakeConn(search_data=[b""])
-    assert _ProbeIMAP(conn).search("a@b.c", limit=5) == []
+    assert _ProbeIMAP(conn).search("a@b.co", limit=5) == []
 
 
 def test_imap_search_handles_a_none_payload():
     conn = _FakeConn(search_data=[None])
-    assert _ProbeIMAP(conn).search("a@b.c", limit=5) == []
+    assert _ProbeIMAP(conn).search("a@b.co", limit=5) == []
 
 
 def test_imap_search_returns_the_most_recent_up_to_limit():
     conn = _FakeConn(search_data=[b"1 2 3 4"])
-    assert _ProbeIMAP(conn).search("a@b.c", limit=2) == [{"uid": "3"}, {"uid": "4"}]
+    assert _ProbeIMAP(conn).search("a@b.co", limit=2) == [{"uid": "3"}, {"uid": "4"}]
 
 
 def test_imap_fetch_uses_body_peek_so_mail_is_not_marked_read():
@@ -176,3 +176,52 @@ def test_imap_conn_closes_the_socket_if_login_fails(monkeypatch):
     with pytest.raises(RuntimeError):
         gmail_tools._IMAP("me@example.com", "pw")._conn()
     assert closed["logout"] is True
+
+
+# ── IMAP argument validation ──────────────────────────────────────────────────
+# imaplib concatenates command arguments raw and terminates the line with CRLF,
+# so a line break inside an argument starts a new IMAP command. These two tools
+# are classified read-only and therefore never reach the approval gate, and
+# their arguments come from a model that was just fed customer-authored email.
+
+def test_a_crlf_payload_in_from_address_is_refused():
+    """The injection: attacker email text -> model -> new IMAP commands."""
+    with pytest.raises(ValueError, match="plain email address"):
+        gmail_tools._safe_address("a@b.c\r\nZ1 SELECT INBOX\r\nZ2 STORE 1:* +FLAGS (\\Deleted)")
+
+
+def test_a_bare_newline_in_from_address_is_refused():
+    with pytest.raises(ValueError):
+        gmail_tools._safe_address("a@b.c\nZ1 EXPUNGE")
+
+
+def test_imap_quoting_and_literal_syntax_are_refused():
+    for payload in ('a@b.c" "x', "a@b.c{10}", "a@b.c\\z"):
+        with pytest.raises(ValueError):
+            gmail_tools._safe_address(payload)
+
+
+def test_a_non_string_address_is_refused_not_crashed():
+    for payload in (None, 123, b"a@b.co"):
+        with pytest.raises(ValueError):
+            gmail_tools._safe_address(payload)
+
+
+def test_a_legitimate_address_still_passes():
+    assert gmail_tools._safe_address("ada@example.com") == "ada@example.com"
+
+
+def test_uid_accepts_only_digits():
+    assert gmail_tools._safe_uid("42") == "42"
+    for payload in ("1\r\nZ1 EXPUNGE", "1:*", "abc", "", None):
+        with pytest.raises(ValueError):
+            gmail_tools._safe_uid(payload)
+
+
+def test_the_search_tool_surfaces_a_refusal_as_a_tool_error():
+    """A refusal must reach the model as an error result, not raise out."""
+    reg = Registry()
+    gmail_tools.register_gmail_tools(reg, _client())
+    out = reg.get("gmail_search_threads").run(from_address="a@b.c\r\nZ1 EXPUNGE")
+    assert out.ok is False
+    assert "email address" in (out.error or "")
