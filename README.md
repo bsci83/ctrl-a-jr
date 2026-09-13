@@ -4,8 +4,29 @@ An AI agent for an auto-detailing shop that takes real action across **Gmail, St
 and cannot change anything in the world without a human seeing the exact artifact and approving it.
 
 **Demo video:** https://youtu.be/lR-FLUIythA
-**Live approval surface:** https://ctrl-a-jr.vercel.app
 **Built for:** Multi-App AI Agent Hackathon, 2026-09-13
+
+| Live | |
+|---|---|
+| **Console** — talk to the agent, watch it work | https://ctrl-a-jr-console.vercel.app |
+| **Approval surface + run evidence** | https://ctrl-a-jr.vercel.app |
+
+Both are deployed on Vercel. The console is deliberately open so it can be tried without a
+login; the credentials behind it are demo-grade by construction — Stripe runs in test mode,
+enforced at construction rather than by convention.
+
+### Where this came from
+
+ctrl-a JR is the small, local-first, single-language sibling of **CTRL-A**, a larger agent
+workspace the same author builds:
+
+- **CTRL-A Workspace** — https://ctrl-a.sageaaa.com
+- **CTRL-A Computer Use** — https://ctrl-a.sageaaa.com/cu
+
+The console's conversation-plus-canvas shape, the channel-native artifact frames and the live
+activity strip are all borrowed from that product. What is inverted here is who authors the
+artifact: in this project the renderers are **code keyed by tool name**, so the model never
+emits markup that a surface displays.
 
 ---
 
