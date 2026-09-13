@@ -23,10 +23,11 @@ packages = ["src/ctrl_a_jr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Test the checkout the tests live in. An editable install resolves `ctrl_a_jr`
-# to whichever clone was installed, so in a git worktree pytest silently
-# exercised the OTHER working tree and reported green on code that was not the
-# code under edit.
+# `ctrl_a_jr` is installed editable against ONE checkout, so a pytest run started
+# inside a git worktree imports the MAIN checkout's source and reports a green
+# suite over code the branch does not contain. Both fan-out agents hit this on
+# 2026-09-13; one only noticed because its change broke a signature. An additive
+# change would have passed over code that never executed.
 pythonpath = ["src"]
 
 [tool.ruff]
