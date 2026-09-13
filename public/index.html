@@ -1,0 +1,1116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctrl-a JR — run evidence</title>
+<!--
+  Read-only evidence surface.
+
+  There is no approve button here and no way to trigger an action from this page.
+  There is no chat input either: the composer at the foot of the conversation is
+  a disabled affordance, wired to nothing, because the interactive loop lives
+  somewhere else. The operable approval surface is the LOCAL page in server.py;
+  credentials never leave the operator's machine, which is the whole thesis.
+
+  Shape: one conversation as the primary column (the run as it happened), one
+  tab per integration the run actually touched (its activity, framed the way
+  that channel frames things), a full-bleed canvas, a verdict, and a drawer at
+  the foot of the page holding the raw event stream. The conversation is the
+  narrative; the drawer is the evidence, and the drawer never goes away.
+
+  Everything is a pure function of evidence.json: the same markup works served
+  statically from web/ and, later, against a live document. No build step, no
+  framework, no CDN, no external request of any kind. Nothing on this page is
+  keyed to a business scenario — every label is derived from the bundle, because
+  the scenario the agent runs is expected to change and the page must not.
+
+  To publish:  python -m ctrl_a_jr.export --out web/evidence.json  &&  vercel deploy
+  web/evidence.json is gitignored: a bundle describes a real run and is generated
+  at deploy time, never committed.
+-->
+<style>
+  /* One deliberate light theme. The artifact stylesheet travels inside the
+     bundle (artifacts.py) and is committed to light surfaces, so a dark mode
+     here would leave the one thing that matters most — the artifact — glowing
+     white inside a dark page. Background and text are both set explicitly. */
+  :root{
+    --bg:#f7f6f3; --panel:#fff; --panel-2:#faf9f7; --high:#f1efeb;
+    --line:#e1ddd7; --line-soft:#eeebe6;
+    --ink:#17150f; --ink-2:#514c44; --ink-3:#8d8880;
+    --ok:#1a7f37; --ok-bg:#e9f5ec; --ok-line:#b6ddc1;
+    --bad:#c02c1f; --bad-bg:#fdf0ee; --bad-line:#f2c4bd;
+    --warn:#8a6420; --warn-bg:#fdf6e6; --warn-line:#efdfba;
+    --mute:#b3aea6; --mute-bg:#f4f2ef;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --r:16px;
+    --shadow:0 1px 2px rgba(23,21,15,.05),0 8px 24px -18px rgba(23,21,15,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{max-width:100%;overflow-x:hidden}
+  body{font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif;margin:0;
+       background:var(--bg);color:var(--ink);padding-bottom:52px}
+  button{font-family:inherit}
+
+  /* ---- chrome --------------------------------------------------------- */
+  header{background:var(--panel);border-bottom:1px solid var(--line);
+         padding:12px 20px 0;position:sticky;top:0;z-index:4}
+  .hrow{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;
+        max-width:1360px;margin:0 auto}
+  .mark{display:flex;align-items:center;gap:9px}
+  .mark .sq{width:26px;height:26px;border-radius:8px;background:var(--ink);color:#fff;
+            font:800 10px/1 var(--mono);display:flex;align-items:center;
+            justify-content:center;letter-spacing:.02em}
+  h1{font:650 16px/1 system-ui;margin:0;letter-spacing:-.01em}
+  .sub{font:12px var(--mono);color:var(--ink-3);display:flex;flex-wrap:wrap;
+       gap:2px 10px;align-items:center;min-width:0}
+  .sub .dot{color:var(--mute)}
+  .ro{font:11px system-ui;color:var(--warn);background:var(--warn-bg);
+      border:1px solid var(--warn-line);border-radius:20px;padding:3px 11px;margin-left:auto}
+  nav{display:flex;gap:2px;flex-wrap:wrap;max-width:1360px;margin:10px auto 0}
+  nav button{font:13px system-ui;padding:8px 13px 10px;cursor:pointer;border:0;
+             background:none;color:var(--ink-3);border-bottom:2px solid transparent;
+             display:flex;align-items:center;gap:7px}
+  nav button:hover{color:var(--ink-2)}
+  nav button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--ink);
+                                   font-weight:600}
+  nav .count{font:10px var(--mono);color:var(--ink-3);background:var(--high);
+             border-radius:20px;padding:1px 6px}
+  nav .swatch{width:7px;height:7px;border-radius:2px;flex:0 0 7px}
+
+  main{display:flex;gap:18px;align-items:flex-start;padding:20px 20px 40px;
+       max-width:1360px;margin:0 auto}
+  /* min-width:0 on every flex child: without it a long token widens the child
+     and the whole page scrolls sideways instead of the pane. */
+  .col{min-width:0}
+  .col-main{flex:1 1 640px}
+  .col-side{flex:0 1 320px;position:sticky;top:110px;max-height:calc(100vh - 180px);
+            overflow-y:auto;overflow-x:hidden}
+  .col-rail{flex:0 1 260px}
+  .col-wide{flex:1 1 100%}
+  @media (max-width:900px){
+    main{flex-direction:column;padding:14px 12px 32px;gap:14px}
+    .col{flex:1 1 auto;width:100%}
+    .col-side{position:static;max-height:none}
+    header{position:static}
+  }
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+         padding:16px;margin-bottom:14px;box-shadow:var(--shadow)}
+  .caps{font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;
+        color:var(--ink-3);margin:0 0 12px}
+  .caps.tight{margin-bottom:8px}
+  .empty{color:var(--ink-3);text-align:center;padding:34px 18px;font:14px/1.6 system-ui}
+  .empty code{font:12px var(--mono);background:var(--high);padding:2px 6px;
+              border-radius:4px;overflow-wrap:anywhere}
+  .scroll{overflow-x:auto;max-width:100%}
+  select{font:13px system-ui;padding:4px 8px;border:1px solid var(--line);
+         border-radius:8px;background:var(--panel);color:var(--ink)}
+
+  /* ---- conversation --------------------------------------------------- */
+  .convo{max-width:760px}
+  .msg{display:flex;gap:12px;margin-bottom:16px}
+  .msg .av{width:28px;height:28px;border-radius:9px;flex:0 0 28px;margin-top:1px;
+           display:flex;align-items:center;justify-content:center;color:#fff;
+           font:800 9px/1 var(--mono);letter-spacing:.03em}
+  .msg .av.op{background:#3d5a80}
+  .msg .av.jr{background:var(--ink)}
+  .msg .av.sys{background:var(--mute);color:#fff}
+  .msg .body{flex:1 1 auto;min-width:0}
+  .who{display:flex;flex-wrap:wrap;gap:4px 9px;align-items:baseline;margin-bottom:6px}
+  .who .n{font:600 13px system-ui;color:var(--ink)}
+  .who .t{font:11px var(--mono);color:var(--ink-3)}
+  .bubble{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+          border-top-left-radius:4px;padding:12px 14px;box-shadow:var(--shadow)}
+  .bubble p{margin:0;font:14px/1.55 system-ui;color:var(--ink-2)}
+  .bubble p + p{margin-top:8px}
+  .bubble .withheld{font:13px/1.55 system-ui;color:var(--ink-3);
+                    border-left:3px solid var(--line);padding-left:10px}
+
+  .step{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
+        border:1px solid var(--line-soft);background:var(--panel-2);border-radius:10px;
+        padding:7px 10px;margin-top:8px;cursor:pointer;font:12px var(--mono);
+        color:var(--ink-2)}
+  .step:hover{border-color:var(--line);background:var(--panel)}
+  .step[aria-current="true"]{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink);
+                             background:var(--panel)}
+  .step .dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+  .step .nm{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap}
+  .step .rt{margin-left:auto;color:var(--ink-3);flex:0 0 auto;padding-left:10px;
+            white-space:nowrap}
+  .step.err{background:var(--bad-bg);border-color:var(--bad-line);color:var(--bad)}
+  .step.err .nm{color:var(--bad)}
+  .step.err .rt{color:var(--bad)}
+
+  /* The gate stopping the run is the loudest moment in the conversation. */
+  .gate{border:1px solid var(--warn-line);border-radius:14px;background:var(--warn-bg);
+        padding:12px;margin-top:10px;box-shadow:var(--shadow)}
+  .gate-h{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+  .gate-h .lead{font:600 12px var(--mono);color:var(--warn);text-transform:uppercase;
+                letter-spacing:.06em}
+  .why{font:12.5px/1.55 system-ui;color:var(--ink-2);margin-top:10px}
+  .why.machine{background:var(--mute-bg);border-left:3px solid var(--mute);
+               padding:8px 10px;border-radius:0 6px 6px 0}
+  .meta{font:11.5px var(--mono);color:var(--ink-3);display:flex;flex-wrap:wrap;
+        gap:3px 14px;margin-top:10px;overflow-wrap:anywhere}
+
+  .badge{font:600 12px system-ui;padding:2px 10px;border-radius:20px;white-space:nowrap}
+  .badge.right{margin-left:auto}
+  /* A human saying no and the approval surface disappearing are the same
+     Decision and completely different evidence. They must never look alike. */
+  .badge.approved{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok-line)}
+  .badge.human{background:var(--bad-bg);color:var(--bad);border:1px solid var(--bad-line)}
+  .badge.machine{background:var(--mute-bg);color:var(--ink-2);border:1px dashed var(--mute)}
+  .badge.pending{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line)}
+
+  .composer{margin-top:20px}
+  .composer .box{display:flex;gap:8px;align-items:center;background:var(--high);
+                 border:1px dashed var(--line);border-radius:14px;padding:8px 10px}
+  .composer input{flex:1 1 auto;min-width:0;border:0;background:none;font:14px system-ui;
+                  color:var(--ink-3)}
+  .composer input:disabled{cursor:not-allowed}
+  .composer .send{border:1px solid var(--line);background:var(--panel-2);color:var(--ink-3);
+                  border-radius:10px;padding:6px 14px;font:600 13px system-ui;
+                  cursor:not-allowed;flex:0 0 auto}
+  .composer .note{font:11.5px/1.5 system-ui;color:var(--ink-3);margin:7px 2px 0}
+
+  /* ---- channel-native frames ------------------------------------------ */
+  /* Borrowed from ctrl-a's receipts channel frames: a deliverable is shown
+     inside its own channel's chrome, so a Slack post reads as Slack and an
+     email reads as an email. The chrome is structural only — it never invents
+     a sender, a recipient or a body, because none of those are in the log. */
+  .chan{border:1px solid var(--line);border-radius:14px;background:var(--panel);
+        overflow:hidden;box-shadow:var(--shadow);margin-bottom:14px}
+  .chan-h{display:flex;align-items:center;gap:10px;padding:9px 13px;
+          border-bottom:1px solid var(--line-soft);background:var(--panel-2)}
+  .chan-av{width:28px;height:28px;flex:0 0 28px;border-radius:50%;color:#fff;
+           display:flex;align-items:center;justify-content:center;
+           font:800 11px/1 system-ui}
+  .chan[data-chan="slack"] .chan-av{border-radius:7px}
+  .chan[data-chan="stripe"] .chan-av{border-radius:7px}
+  .chan-id{min-width:0}
+  .chan-id .n{font:600 13px system-ui;color:var(--ink);overflow:hidden;
+              text-overflow:ellipsis;white-space:nowrap}
+  .chan-id .s{font:11px var(--mono);color:var(--ink-3);overflow:hidden;
+              text-overflow:ellipsis;white-space:nowrap}
+  .chan-t{margin-left:auto;flex:0 0 auto;padding-left:10px;font:11px var(--mono);
+          color:var(--ink-3);white-space:nowrap}
+  .chan-b{padding:13px}
+  .chan-f{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:9px 13px;
+          border-top:1px solid var(--line-soft);background:var(--panel-2);
+          font:11.5px var(--mono);color:var(--ink-3)}
+  .chan-accent{height:3px}
+  .chan.sel{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+  .chan-line{font:13px/1.55 system-ui;color:var(--ink-2)}
+  /* The artifact keeps its own header (it carries meaning — "read-only lookup",
+     "will be sent as you") but loses its outer box, so the channel frame and
+     the artifact read as one card instead of two nested ones. */
+  .chan-b .art{border:0;border-radius:0;margin:0;background:transparent}
+  .chan-b .art-h{background:transparent;padding:0 0 8px;margin:0 0 10px;
+                 border-bottom:1px solid var(--line-soft)}
+  .chan-b .art-b{padding:0}
+  .chan-b .art-warn{margin:13px -13px -13px;border-radius:0}
+
+  /* ---- summary tiles --------------------------------------------------- */
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px}
+  .tile{border:1px solid var(--line-soft);border-radius:12px;padding:9px 10px;
+        background:var(--panel-2)}
+  .tile .v{font:800 22px/1.1 system-ui;letter-spacing:-.02em;color:var(--ink)}
+  .tile .k{font:11px/1.35 system-ui;color:var(--ink-3);margin-top:3px}
+  .tile.alarm{background:var(--bad-bg);border-color:var(--bad-line)}
+  .tile.alarm .v{color:var(--bad)}
+  .rowline{display:flex;align-items:center;gap:9px;padding:6px 0;font:12.5px system-ui;
+           color:var(--ink-2);border-top:1px solid var(--line-soft)}
+  .rowline:first-of-type{border-top:0}
+  .rowline .sw{width:8px;height:8px;border-radius:3px;flex:0 0 8px}
+  .rowline .n{font-weight:600;color:var(--ink)}
+  .rowline .r{margin-left:auto;font:11.5px var(--mono);color:var(--ink-3)}
+
+  /* ---- checks / verdict ------------------------------------------------ */
+  .check{border:1px solid var(--line-soft);border-left-width:4px;border-radius:10px;
+         padding:10px 12px;margin-bottom:8px;background:var(--panel)}
+  .check.pass{border-left-color:var(--ok)}
+  .check.fail{border-left-color:var(--bad);background:var(--bad-bg);
+              border-color:var(--bad-line);border-left-color:var(--bad)}
+  /* Inconclusive is not a weaker pass and is never green. It gets its own
+     hatched, colourless treatment so it cannot be mistaken at a glance. */
+  .check.inconclusive{border-left-color:var(--mute);background:
+    repeating-linear-gradient(135deg,var(--mute-bg),var(--mute-bg) 7px,
+    var(--panel-2) 7px,var(--panel-2) 14px)}
+  .check .cid{font:600 13px var(--mono)}
+  .check .cv{font:700 11px system-ui;text-transform:uppercase;letter-spacing:.06em;
+             margin-left:8px}
+  .check.pass .cv{color:var(--ok)}
+  .check.fail .cv{color:var(--bad)}
+  .check.inconclusive .cv{color:var(--ink-2)}
+  .check .ev{font:13px/1.5 system-ui;color:var(--ink-2);margin-top:5px;
+             overflow-wrap:anywhere}
+  .claim{border:1px solid var(--line);border-left-width:4px;border-radius:12px;
+         padding:14px;background:var(--panel)}
+  .claim.claimed{border-left-color:var(--ok)}
+  .claim.refuted{border-left-color:var(--bad);background:var(--bad-bg);
+                 border-color:var(--bad-line);border-left-color:var(--bad)}
+  .claim.inconclusive,.claim.unavailable{border-left-color:var(--mute);
+                                         background:var(--mute-bg)}
+  .claim p{margin:0;font:600 15px/1.55 system-ui}
+  .claim ol{margin:12px 0 0;padding-left:20px}
+  .claim li{font:13px/1.6 system-ui;color:var(--ink-2);margin-bottom:8px;
+            overflow-wrap:anywhere}
+  .claim .lead{font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;
+               color:var(--ink-3);margin-bottom:6px}
+  .integrity{font:12.5px var(--mono);color:var(--ink-2);background:var(--mute-bg);
+             padding:10px 12px;border-radius:10px;overflow-x:auto}
+  .integrity.unsound{color:var(--bad);background:var(--bad-bg)}
+  .ev{font:13px/1.5 system-ui;color:var(--ink-2);overflow-wrap:anywhere}
+
+  /* ---- canvas ---------------------------------------------------------- */
+  .pick{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
+        border:1px solid transparent;background:none;border-radius:10px;padding:7px 9px;
+        cursor:pointer;font:12px var(--mono);color:var(--ink-2);margin-bottom:2px}
+  .pick:hover{background:var(--high)}
+  .pick[aria-current="true"]{background:var(--ink);color:#fff}
+  .pick[aria-current="true"] .sub2{color:#cfcbc4}
+  .pick .dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+  .pick .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .pick .sub2{margin-left:auto;flex:0 0 auto;padding-left:8px;color:var(--ink-3);
+              font-size:11px}
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+         padding:18px;box-shadow:var(--shadow)}
+  .stage .hold{max-width:620px;margin:0 auto}
+
+  /* ---- raw event drawer ------------------------------------------------ */
+  .drawer{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--panel);
+          border-top:1px solid var(--line);box-shadow:0 -2px 18px rgba(23,21,15,.07)}
+  .drawer-h{display:flex;align-items:center;gap:10px;width:100%;padding:9px 20px;
+            background:none;border:0;cursor:pointer;text-align:left;
+            font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.08em;
+            color:var(--ink-3)}
+  .drawer-h:hover{color:var(--ink-2);background:var(--panel-2)}
+  .drawer-h .caret{flex:0 0 10px;color:var(--mute)}
+  .drawer-h .tag{font:10px var(--mono);background:var(--high);color:var(--ink-3);
+                 border-radius:20px;padding:1px 7px;letter-spacing:0;
+                 text-transform:none}
+  .drawer-h .tag.unsound{background:var(--bad-bg);color:var(--bad)}
+  .drawer-h .tag.right{margin-left:auto}
+  .drawer-b{max-height:44vh;overflow-y:auto;overflow-x:hidden;
+            border-top:1px solid var(--line-soft);padding:6px 0 10px}
+  .lgwrap{overflow-x:auto}
+  .lg{display:flex;gap:14px;padding:2px 20px;font:12px/1.65 var(--mono);
+      white-space:nowrap;width:max-content;min-width:100%}
+  .lg:hover{background:var(--panel-2)}
+  .lg .ts{color:var(--ink-3);opacity:.75;flex:0 0 auto}
+  .lg .tn{color:var(--mute);flex:0 0 34px}
+  .lg .ev2{font-weight:600;flex:0 0 200px;color:var(--ink)}
+  .lg .ms{color:var(--ink-2);flex:1 1 auto}
+  .lg.err .ev2,.lg.err .ms{color:var(--bad)}
+  .lg.gate2 .ev2{color:var(--warn)}
+  @media (max-width:900px){ .drawer-b{max-height:52vh} }
+</style>
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <span class="mark"><span class="sq">JR</span><h1>ctrl-a JR</h1></span>
+    <span class="sub" id="runline"></span>
+    <span class="ro">read-only evidence — no action can be taken from this page</span>
+  </div>
+  <nav id="tabs" role="tablist"></nav>
+</header>
+<main id="main"><div class="panel"><div class="empty">Loading evidence…</div></div></main>
+<div class="drawer" id="drawer" hidden></div>
+
+<script>
+"use strict";
+
+// Glyphs follow server.py's activity strip so the two surfaces read as one
+// product. Text, not images: this page makes zero external requests.
+var ICONS = {
+  model_turn: ">", tool_call: "*", tool_refused: "x", approval_requested: "?",
+  approval_resolved: "!", approval_auto_denied: "!", payload_mismatch: "!",
+  provider_transport_failure: "x", provider_switched: "~", round_limit_reached: "-",
+  content_block_dropped: "-"
+};
+
+// Accent per integration, keyed by the prefix the exporter derived from the tool
+// name. An integration nobody has styled falls through to a neutral slate —
+// the page must render a fourth integration the day it appears in the data.
+var ACCENT = {
+  slack: "#4a154b", stripe: "#5b53d6", gmail: "#c0392b",
+  write: "#5b6470", provider: "#3d5a80"
+};
+function accentOf(key) { return ACCENT[key] || "#6f6a62"; }
+
+var DOC = null;
+var state = { run: 0, tab: "conversation", sel: null, drawer: false };
+
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  // textContent, never innerHTML: every string below this line comes from the
+  // bundle, and the bundle describes attacker-influenced customer mail. The
+  // ONLY markup this page trusts is artifact_html, which the typed renderers in
+  // artifacts.py produced with every value escaped.
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+}
+
+function run() {
+  return (DOC.runs || [])[state.run] ||
+         { events: [], approvals: [], checks: [], outcome: null };
+}
+
+function outcome() { return run().outcome || {}; }
+
+function approvalsById() {
+  var map = {};
+  (run().approvals || []).forEach(function (a) { map[a.approval_id] = a; });
+  return map;
+}
+
+function keyOf(e) { return "r" + state.run + ":" + e._i; }
+
+// "2026-09-13T12:04:09+00:00" -> "12:04:09". Never reformats into a local
+// timezone: the bundle's own string is the record, and a rendered time that
+// disagrees with the raw row in the drawer would be a small lie.
+function clockOf(ts) {
+  if (!ts) return "";
+  var m = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
+  return m ? m[1] : String(ts);
+}
+
+function labelFor(e) {
+  if (e.event === "model_turn") return "thinking (" + (e.model || "?") + ")";
+  if (e.event === "tool_call" || e.event === "tool_refused") return e.tool || "tool";
+  if (e.event === "provider_switched") return "switched to " + (e.model || "?");
+  if (e.unknown_event) return e.event;
+  return e.event;
+}
+
+function detailFor(e) {
+  if (e.event === "model_turn") return "round " + (e.round == null ? "?" : e.round);
+  if (e.event === "tool_call") {
+    if (e.ok) return (e.mutating ? "sent · " : "") + (e.result_chars || 0) + " chars";
+    return "failed" + (e.error_type ? ": " + e.error_type : "");
+  }
+  if (e.event === "tool_refused") return e.reason || "refused";
+  if (e.event === "approval_requested") return "stopped for approval";
+  if (e.event === "approval_resolved") return "decision " + (e.decision || "?");
+  if (e.event === "approval_auto_denied") return e.reason || "auto-denied";
+  if (e.event === "provider_switched") return e.provider || "provider change";
+  if (e.event === "content_block_dropped") return e.block_type || "dropped";
+  if (e.event === "payload_mismatch") return "aborted";
+  if (e.event === "provider_transport_failure") return e.error_type || "transport";
+  if (e.event === "round_limit_reached") return "max " + e.max_rounds;
+  if (e.unknown_event) return "not exported (unknown event type)";
+  return e.tool || "";
+}
+
+function isErr(e) {
+  return e.event === "tool_refused" || e.event === "payload_mismatch" ||
+         e.event === "provider_transport_failure" ||
+         (e.event === "tool_call" && e.ok === false);
+}
+
+function decisionBadge(a) {
+  if (!a) return { cls: "pending", text: "no decision recorded" };
+  if (a.decision === "approved") return { cls: "approved", text: "approved by you" };
+  if (a.decision === "denied" && a.decided_by === "machine") {
+    return { cls: "machine", text: "auto-denied by the machine" };
+  }
+  if (a.decision === "denied") return { cls: "human", text: "denied by you" };
+  return { cls: "pending", text: "still pending" };
+}
+
+/* ---- channel-native frame --------------------------------------------- */
+
+// Structural chrome only. It says which channel this went through and when —
+// it never fabricates a sender, a recipient or a body, because the log does not
+// record them (design §6) and a plausible-looking invention on an evidence page
+// is worse than a blank.
+function channelFrame(e, opts) {
+  opts = opts || {};
+  var key = e.integration || "other";
+  var label = e.integration_label || key;
+  var wrap = el("div", "chan" + (opts.selected ? " sel" : ""));
+  wrap.setAttribute("data-chan", key);
+
+  var bar = el("div", "chan-accent");
+  bar.style.background = accentOf(key);
+  wrap.appendChild(bar);
+
+  var head = el("div", "chan-h");
+  var av = el("div", "chan-av", String(label).trim().charAt(0).toUpperCase() || "?");
+  av.style.background = accentOf(key);
+  head.appendChild(av);
+  var id = el("div", "chan-id");
+  id.appendChild(el("div", "n", label));
+  id.appendChild(el("div", "s", e.tool || e.event));
+  head.appendChild(id);
+  if (e.ts) head.appendChild(el("div", "chan-t", clockOf(e.ts)));
+  wrap.appendChild(head);
+
+  var body = el("div", "chan-b");
+  if (e.artifact_html) {
+    var host = el("div", "scroll");
+    // The one trusted-markup path on this page, and the reason artifacts.py
+    // exists: this HTML was produced by a typed renderer keyed on the tool
+    // name, from arguments the exporter chose — never from anything a model
+    // wrote. Model-authored markup is never rendered as HTML anywhere here.
+    host.innerHTML = e.artifact_html;
+    body.appendChild(host);
+  } else {
+    body.appendChild(el("div", "chan-line", opts.fallback ||
+      "No artifact for this step — it is a state change in the run, not a call."));
+  }
+  wrap.appendChild(body);
+
+  var foot = el("div", "chan-f");
+  foot.appendChild(el("span", null, detailFor(e) || e.event));
+  if (opts.badge) {
+    foot.appendChild(el("span", "badge right " + opts.badge.cls, opts.badge.text));
+  } else if (e.approval_id) {
+    foot.appendChild(el("span", null, e.approval_id));
+  }
+  if (foot.childNodes.length) wrap.appendChild(foot);
+  return wrap;
+}
+
+/* ---- the conversation -------------------------------------------------- */
+
+// The run grouped the way a reader experiences it: a turn, the calls it made,
+// and the gate stopping it where that happened. `turn` is assigned by the
+// exporter (export.assign_turns) rather than guessed here.
+function turnsOf() {
+  var groups = [];
+  var byTurn = {};
+  (run().events || []).forEach(function (e) {
+    var t = e.turn == null ? 0 : e.turn;
+    if (!byTurn[t]) {
+      byTurn[t] = { turn: t, head: null, steps: [] };
+      groups.push(byTurn[t]);
+    }
+    if (e.event === "model_turn" && !byTurn[t].head) byTurn[t].head = e;
+    else byTurn[t].steps.push(e);
+  });
+  return groups;
+}
+
+function message(avCls, avText, who, when) {
+  var msg = el("div", "msg");
+  msg.appendChild(el("div", "av " + avCls, avText));
+  var body = el("div", "body");
+  var line = el("div", "who");
+  line.appendChild(el("span", "n", who));
+  if (when) line.appendChild(el("span", "t", when));
+  body.appendChild(line);
+  msg.appendChild(body);
+  msg._body = body;
+  return msg;
+}
+
+function taskMessage() {
+  var r = run();
+  var msg = message("op", "OP", "Operator", clockOf(r.started_at));
+  var b = el("div", "bubble");
+  b.appendChild(el("p", null, "The task that started this run."));
+  b.appendChild(el("div", "withheld",
+    "Not reproduced here. The activity log records the tool, the approval id, " +
+    "the payload hash and a character count — never message text (design " +
+    "§6) — so there is nothing to export. What follows is what the run " +
+    "did about it."));
+  msg._body.appendChild(b);
+  return msg;
+}
+
+function stepRow(e) {
+  var row = el("button", "step" + (isErr(e) ? " err" : ""));
+  row.type = "button";
+  var dot = el("span", "dot");
+  dot.style.background = e.integration ? accentOf(e.integration) : "var(--mute)";
+  row.appendChild(dot);
+  row.appendChild(el("span", "nm", labelFor(e)));
+  row.appendChild(el("span", "rt", detailFor(e)));
+  row.setAttribute("aria-current", state.sel === keyOf(e) ? "true" : "false");
+  row.addEventListener("click", function () { state.sel = keyOf(e); draw(); });
+  return row;
+}
+
+function gateCard(e, approval) {
+  var card = el("div", "gate");
+  var head = el("div", "gate-h");
+  head.appendChild(el("span", "lead", "the gate stopped the run"));
+  var b = decisionBadge(approval);
+  head.appendChild(el("span", "badge right " + b.cls, b.text));
+  card.appendChild(head);
+
+  card.appendChild(channelFrame(e, {
+    selected: state.sel === keyOf(e),
+    fallback: "The approver saw a typed card for this call."
+  }));
+
+  if (approval && approval.decided_by === "machine") {
+    card.appendChild(el("div", "why machine",
+      "No human answered this. The approval surface went away (" +
+      (approval.machine_reason || "approver_stopped") + "), so the gate refused " +
+      "— an unanswerable request must never become an approval. This is not " +
+      "evidence that an operator reviewed and rejected it."));
+  } else if (approval && approval.decision === "denied") {
+    card.appendChild(el("div", "why", "A human reviewed this artifact and said no."));
+  } else if (approval && approval.decision === "approved") {
+    card.appendChild(el("div", "why",
+      approval.executed
+        ? "A human approved it, and the call then executed against a re-derived " +
+          "payload hash."
+        : "A human approved it. No matching execution is recorded."));
+  } else {
+    card.appendChild(el("div", "why",
+      "No decision for this request is recorded in the evidence log."));
+  }
+
+  var meta = el("div", "meta");
+  meta.appendChild(el("span", null,
+    "payload " + ((approval && approval.payload_hash) || e.payload_hash || "?") + "…"));
+  if (e.rendered_chars != null) {
+    meta.appendChild(el("span", null, e.rendered_chars + " chars shown to the approver"));
+  }
+  if (e.approval_id) meta.appendChild(el("span", null, e.approval_id));
+  card.appendChild(meta);
+
+  card.addEventListener("click", function () { state.sel = keyOf(e); draw(); });
+  return card;
+}
+
+function composer() {
+  // A disabled affordance, wired to nothing. There is no form element and no
+  // listener: this page renders a finished run, and the interactive loop is a
+  // different surface whose contract is not settled.
+  var wrap = el("div", "composer");
+  var box = el("div", "box");
+  var input = el("input");
+  input.type = "text";
+  input.disabled = true;
+  input.setAttribute("aria-disabled", "true");
+  input.placeholder = "Replies come from the live run, not from here";
+  box.appendChild(input);
+  var send = el("span", "send", "Send");
+  send.setAttribute("aria-disabled", "true");
+  box.appendChild(send);
+  wrap.appendChild(box);
+  wrap.appendChild(el("p", "note",
+    "This page is a record. Nothing typed here would go anywhere, so nothing is " +
+    "wired up — and no action, approval or denial can be taken from this page " +
+    "at all."));
+  return wrap;
+}
+
+function renderConversation() {
+  var wrap = el("div", "convo");
+  var byId = approvalsById();
+  wrap.appendChild(taskMessage());
+
+  var groups = turnsOf();
+  if (!groups.length) {
+    var p = el("div", "panel");
+    p.appendChild(el("div", "empty", "This run recorded no events."));
+    wrap.appendChild(p);
+    return wrap;
+  }
+
+  groups.forEach(function (g) {
+    var head = g.head;
+    var when = clockOf((head && head.ts) || (g.steps[0] && g.steps[0].ts));
+    var who = head ? "ctrl-a JR" : "ctrl-a JR · before the first model turn";
+    var msg = message(head ? "jr" : "sys", head ? "JR" : "•", who, when);
+    var b = el("div", "bubble");
+    if (head) {
+      b.appendChild(el("p", null,
+        "Turn " + (head.round == null ? g.turn : head.round) + " — " +
+        (head.model || "unknown model") +
+        (head.provider ? " via " + head.provider : "") + "."));
+    } else {
+      b.appendChild(el("p", null, "Recorded before the model's first turn."));
+    }
+    if (!g.steps.length) {
+      b.appendChild(el("p", null, "No calls followed this turn."));
+    }
+    msg._body.appendChild(b);
+
+    g.steps.forEach(function (e) {
+      // "asked" and "answered" are one moment to a reader: the resolution rows
+      // fold into the gate card rather than getting rows of their own. They are
+      // still in the drawer, untouched.
+      if (e.event === "approval_resolved" || e.event === "approval_auto_denied") return;
+      if (e.event === "approval_requested") {
+        msg._body.appendChild(gateCard(e, byId[e.approval_id] || null));
+      } else {
+        msg._body.appendChild(stepRow(e));
+      }
+    });
+    wrap.appendChild(msg);
+  });
+
+  wrap.appendChild(outcomeMessage());
+  wrap.appendChild(composer());
+  return wrap;
+}
+
+function outcomeMessage() {
+  var o = outcome();
+  var g = o.gate || {};
+  var msg = message("sys", "END", "Outcome", clockOf(run().ended_at));
+  var b = el("div", "bubble");
+  var tiles = el("div", "tiles");
+  [
+    { k: "actions taken", v: o.mutations_executed },
+    { k: "reads", v: o.reads },
+    { k: "stopped at the gate", v: g.requested },
+    { k: "approved", v: g.approved },
+    { k: "denied", v: (g.denied_by_human || 0) + (g.denied_by_machine || 0) },
+    { k: "failed or refused", v: (o.mutations_failed || 0) + (o.refusals || 0),
+      alarm: (o.mutations_failed || 0) + (o.refusals || 0) > 0 }
+  ].forEach(function (t) {
+    var tile = el("div", "tile" + (t.alarm ? " alarm" : ""));
+    tile.appendChild(el("div", "v", t.v == null ? "–" : t.v));
+    tile.appendChild(el("div", "k", t.k));
+    tiles.appendChild(tile);
+  });
+  b.appendChild(tiles);
+  if (o.payload_mismatches) {
+    b.appendChild(el("p", null,
+      o.payload_mismatches + " payload mismatch(es): a call was aborted because " +
+      "what would have executed did not match what was approved."));
+  }
+  msg._body.appendChild(b);
+  return msg;
+}
+
+/* ---- side rail --------------------------------------------------------- */
+
+function renderRail() {
+  var frag = document.createDocumentFragment();
+  var o = outcome();
+
+  var chan = el("div", "panel");
+  chan.appendChild(el("h2", "caps tight", "Channels this run touched"));
+  var rows = o.integrations || [];
+  if (!rows.length) {
+    chan.appendChild(el("div", "ev", "No integration call is recorded in this run."));
+  }
+  rows.forEach(function (t) {
+    var row = el("div", "rowline");
+    var sw = el("span", "sw");
+    sw.style.background = accentOf(t.key);
+    row.appendChild(sw);
+    row.appendChild(el("span", "n", t.label));
+    row.appendChild(el("span", "r",
+      t.events + " event" + (t.events === 1 ? "" : "s") +
+      (t.approvals ? " · " + t.approvals + " gated" : "")));
+    chan.appendChild(row);
+  });
+  frag.appendChild(chan);
+
+  var checks = el("div", "panel");
+  checks.appendChild(el("h2", "caps tight", "Checks on this run"));
+  var list = run().checks || [];
+  if (!list.length) {
+    // Absent evidence renders as absent. It never renders as a pass.
+    checks.appendChild(el("div", "ev",
+      "No per-run check was recorded for this run. That is an absence of " +
+      "evidence, not a pass."));
+  }
+  list.forEach(function (c) { checks.appendChild(checkBox(c)); });
+  var jump = el("button", "pick", "Open the full verdict →");
+  jump.type = "button";
+  jump.addEventListener("click", function () { state.tab = "verdict"; draw(); });
+  checks.appendChild(jump);
+  frag.appendChild(checks);
+  return frag;
+}
+
+function checkBox(c) {
+  // Anything that is not exactly "pass" or "fail" is inconclusive, here as well
+  // as in the exporter. Two independent places have to agree before an unknown
+  // verdict word could ever be coloured green; neither will do it.
+  var v = c.verdict === "pass" || c.verdict === "fail" ? c.verdict : "inconclusive";
+  var box = el("div", "check " + v);
+  var line = el("div");
+  line.appendChild(el("span", "cid", c.id));
+  line.appendChild(el("span", "cv", v));
+  box.appendChild(line);
+  if (c.evidence) box.appendChild(el("div", "ev", c.evidence));
+  return box;
+}
+
+/* ---- integration tab --------------------------------------------------- */
+
+function eventsFor(key) {
+  return (run().events || []).filter(function (e) { return e.integration === key; });
+}
+
+function renderIntegration(key) {
+  var wrap = el("div", "convo");
+  var byId = approvalsById();
+  var all = eventsFor(key);
+  // "asked" and "answered" are one card here too; the folded rows are counted
+  // out of the header rather than quietly inflating it, and the drawer below
+  // still carries every one of them.
+  var rows = all.filter(function (e) {
+    return e.event !== "approval_resolved" && e.event !== "approval_auto_denied";
+  });
+  var folded = all.length - rows.length;
+  var meta = (DOC.integrations || []).filter(function (t) { return t.key === key; })[0];
+
+  var head = el("div", "panel");
+  head.appendChild(el("h2", "caps tight", (meta ? meta.label : key) + " in this run"));
+  head.appendChild(el("div", "ev",
+    rows.length + " card" + (rows.length === 1 ? "" : "s") +
+    (folded ? " (" + folded + " decision row" + (folded === 1 ? "" : "s") +
+              " folded into the card that asked)" : "") +
+    ", shown the way this channel frames things. Message text is not in the " +
+    "evidence log, so each card shows the typed artifact the approver saw, not " +
+    "the content. The raw rows are all in the drawer."));
+  wrap.appendChild(head);
+
+  if (!rows.length) {
+    var p = el("div", "panel");
+    p.appendChild(el("div", "empty", "Nothing in this run touched this integration."));
+    wrap.appendChild(p);
+    return wrap;
+  }
+
+  rows.forEach(function (e) {
+    var approval = e.approval_id ? byId[e.approval_id] : null;
+    var opts = { selected: state.sel === keyOf(e) };
+    if (e.event === "approval_requested") opts.badge = decisionBadge(approval);
+    var card = channelFrame(e, opts);
+    card.addEventListener("click", function () { state.sel = keyOf(e); draw(); });
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+/* ---- canvas ------------------------------------------------------------ */
+
+function artifactEvents() {
+  return (run().events || []).filter(function (e) { return !!e.artifact_html; });
+}
+
+function selectedEvent() {
+  var all = run().events || [];
+  for (var i = 0; i < all.length; i++) {
+    if (keyOf(all[i]) === state.sel) return all[i];
+  }
+  // Default to the LAST thing that has an artifact, so the canvas opens on the
+  // substance of the run rather than on whichever event happened last.
+  var arts = artifactEvents();
+  return arts[arts.length - 1] || all[all.length - 1] || null;
+}
+
+function renderCanvas() {
+  var main = document.getElementById("main");
+  var rail = el("div", "col col-rail");
+  var picker = el("div", "panel");
+  picker.appendChild(el("h2", "caps tight", "Artifacts in this run"));
+  var arts = artifactEvents();
+  if (!arts.length) {
+    picker.appendChild(el("div", "ev", "This run produced no typed artifact."));
+  }
+  var sel = selectedEvent();
+  arts.forEach(function (e) {
+    var b = el("button", "pick");
+    b.type = "button";
+    b.setAttribute("aria-current", sel && keyOf(sel) === keyOf(e) ? "true" : "false");
+    var dot = el("span", "dot");
+    dot.style.background = accentOf(e.integration || "other");
+    b.appendChild(dot);
+    b.appendChild(el("span", "nm", e.tool || e.event));
+    b.appendChild(el("span", "sub2", clockOf(e.ts)));
+    b.addEventListener("click", function () { state.sel = keyOf(e); draw(); });
+    picker.appendChild(b);
+  });
+  rail.appendChild(picker);
+
+  var stage = el("div", "col col-main");
+  var box = el("div", "stage");
+  if (!sel) {
+    box.appendChild(el("div", "empty", "This run recorded nothing to render."));
+  } else {
+    var hold = el("div", "hold");
+    var approval = sel.approval_id ? approvalsById()[sel.approval_id] : null;
+    hold.appendChild(channelFrame(sel, {
+      badge: sel.event === "approval_requested" ? decisionBadge(approval) : null
+    }));
+    hold.appendChild(el("div", "ev",
+      "Rendered by the typed renderer for this tool, from arguments the exporter " +
+      "chose — never from markup a model wrote."));
+    box.appendChild(hold);
+  }
+  stage.appendChild(box);
+
+  main.appendChild(stage);
+  main.appendChild(rail);
+}
+
+/* ---- verdict ----------------------------------------------------------- */
+
+function renderVerdict() {
+  var frag = document.createDocumentFragment();
+  var v = DOC.verdict;
+  var head = DOC.headline || {};
+
+  var claimPanel = el("div", "panel");
+  claimPanel.appendChild(el("h2", "caps", "Headline claim"));
+  var claim = el("div", "claim " + (head.status || "unavailable"));
+  claim.appendChild(el("div", "lead", head.status || "unavailable"));
+  claim.appendChild(el("p", null, head.claim || "No claim."));
+  var ol = el("ol");
+  (head.qualifiers || []).forEach(function (q) { ol.appendChild(el("li", null, q)); });
+  // The qualifiers are rendered unconditionally and never behind a toggle: the
+  // unqualified version of this claim was a finding against this project.
+  claim.appendChild(ol);
+  claimPanel.appendChild(claim);
+  frag.appendChild(claimPanel);
+
+  var checksPanel = el("div", "panel");
+  checksPanel.appendChild(el("h2", "caps", "Checks"));
+  var checks = (v && v.checks) || [];
+  if (!checks.length) {
+    checksPanel.appendChild(el("div", "empty",
+      "No verdict was produced for this bundle. That is not a pass."));
+  }
+  checks.forEach(function (c) { checksPanel.appendChild(checkBox(c)); });
+
+  var li = (v && v.log_integrity) || DOC.log_integrity || {};
+  checksPanel.appendChild(el("h2", "caps", "Log integrity"));
+  checksPanel.appendChild(el("div", "integrity" + (li.sound ? "" : " unsound"),
+    (li.sound ? "sound — " : "UNSOUND — ") + (li.evidence || "not measured")));
+  frag.appendChild(checksPanel);
+
+  var perRun = (v && v.per_run) || [];
+  if (perRun.length) {
+    var prPanel = el("div", "panel");
+    prPanel.appendChild(el("h2", "caps", "Per run"));
+    perRun.forEach(function (r) {
+      prPanel.appendChild(el("div", "caps tight", "run " + r.run_id));
+      (r.checks || []).forEach(function (c) { prPanel.appendChild(checkBox(c)); });
+    });
+    frag.appendChild(prPanel);
+  }
+
+  var about = el("div", "panel");
+  about.appendChild(el("h2", "caps", "What is not in this file"));
+  about.appendChild(el("div", "ev", (DOC.redaction || {}).note || ""));
+  frag.appendChild(about);
+  return frag;
+}
+
+/* ---- raw event drawer -------------------------------------------------- */
+
+function renderDrawer() {
+  var host = document.getElementById("drawer");
+  host.textContent = "";
+  host.hidden = false;
+  var events = run().events || [];
+  var li = (DOC.verdict && DOC.verdict.log_integrity) || DOC.log_integrity || {};
+
+  var toggle = el("button", "drawer-h");
+  toggle.type = "button";
+  toggle.setAttribute("aria-expanded", state.drawer ? "true" : "false");
+  toggle.appendChild(el("span", "caret", state.drawer ? "▾" : "▸"));
+  toggle.appendChild(el("span", null, "raw event stream"));
+  toggle.appendChild(el("span", "tag", events.length + " events · run " +
+                                      (run().run_id || "?")));
+  toggle.appendChild(el("span", "tag right" + (li.sound ? "" : " unsound"),
+    "log integrity: " + (li.sound ? "sound" : "unsound")));
+  toggle.addEventListener("click", function () { state.drawer = !state.drawer; draw(); });
+  host.appendChild(toggle);
+  if (!state.drawer) return;
+
+  var body = el("div", "drawer-b");
+  var wrap = el("div", "lgwrap");
+  if (!events.length) {
+    wrap.appendChild(el("div", "empty", "No events in this run."));
+  }
+  // Every row, including the ones the conversation folds away. This is the
+  // evidence; the conversation above it is only the narrative.
+  events.forEach(function (e) {
+    var cls = "lg";
+    if (isErr(e)) cls += " err";
+    if (String(e.event).indexOf("approval") === 0) cls += " gate2";
+    var row = el("div", cls);
+    row.appendChild(el("span", "ts", e.ts || "—"));
+    row.appendChild(el("span", "tn", "t" + (e.turn == null ? "?" : e.turn)));
+    row.appendChild(el("span", "ev2",
+      (ICONS[e.event] || "-") + " " + e.event + (e.unknown_event ? " (unexported)" : "")));
+    var bits = [];
+    if (e.tool) bits.push(e.tool);
+    if (e.approval_id) bits.push(e.approval_id);
+    if (e.payload_hash) bits.push("payload " + e.payload_hash + "…");
+    if (e.decision) bits.push("decision=" + e.decision);
+    if (e.reason) bits.push("reason=" + e.reason);
+    if (e.error_type) bits.push("error=" + e.error_type);
+    if (e.model) bits.push(e.model);
+    if (e.result_chars != null) bits.push(e.result_chars + " chars");
+    if (e.rendered_chars != null) bits.push(e.rendered_chars + " rendered");
+    if (e.mutating != null) bits.push(e.mutating ? "mutating" : "read-only");
+    if (e.ok != null) bits.push(e.ok ? "ok" : "not ok");
+    row.appendChild(el("span", "ms", bits.join("  ·  ")));
+    wrap.appendChild(row);
+  });
+  body.appendChild(wrap);
+  host.appendChild(body);
+}
+
+/* ---- chrome ------------------------------------------------------------ */
+
+function tabList() {
+  var tabs = [{ key: "conversation", label: "Conversation" }];
+  // Derived from the tool names present in the data — a fourth integration
+  // shows up here the day it shows up in a run, without an edit to this file.
+  // The tab LIST spans every run so the chrome does not jump when the run
+  // selector moves; the COUNT is this run's, so it never overstates.
+  var here = {};
+  (outcome().integrations || []).forEach(function (t) { here[t.key] = t.events; });
+  (DOC.integrations || []).forEach(function (t) {
+    tabs.push({ key: t.key, label: t.label, count: here[t.key] || 0,
+                accent: accentOf(t.key) });
+  });
+  tabs.push({ key: "canvas", label: "Canvas" });
+  tabs.push({ key: "verdict", label: "Verdict" });
+  return tabs;
+}
+
+function renderTabs() {
+  var nav = document.getElementById("tabs");
+  nav.textContent = "";
+  var tabs = tabList();
+  var known = {};
+  tabs.forEach(function (t) { known[t.key] = true; });
+  if (!known[state.tab]) state.tab = "conversation";
+  tabs.forEach(function (t) {
+    var b = el("button");
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", state.tab === t.key ? "true" : "false");
+    if (t.accent) {
+      var sw = el("span", "swatch");
+      sw.style.background = t.accent;
+      b.appendChild(sw);
+    }
+    b.appendChild(el("span", null, t.label));
+    if (t.count != null) b.appendChild(el("span", "count", t.count));
+    b.addEventListener("click", function () { state.tab = t.key; draw(); });
+    nav.appendChild(b);
+  });
+}
+
+function renderRunLine() {
+  var line = document.getElementById("runline");
+  line.textContent = "";
+  var v = DOC.verdict || {};
+  var r = run();
+  [["run " + (r.run_id || "?")],
+   [v.model || "unknown model"],
+   ["commit " + String(DOC.commit || "?").slice(0, 8)],
+   ["exported " + (DOC.generated_at || "?")]].forEach(function (bit, i) {
+    if (i) line.appendChild(el("span", "dot", "·"));
+    line.appendChild(el("span", null, bit[0]));
+  });
+  if ((DOC.runs || []).length > 1) {
+    var sel = el("select");
+    sel.setAttribute("aria-label", "choose a run");
+    DOC.runs.forEach(function (rr, i) {
+      var o = el("option", null,
+        "run " + rr.run_id + " (" + (rr.events || []).length + " events)");
+      o.value = String(i);
+      sel.appendChild(o);
+    });
+    sel.value = String(state.run);
+    sel.addEventListener("change", function () {
+      state.run = Number(sel.value); state.sel = null; draw();
+    });
+    line.appendChild(sel);
+  }
+}
+
+function draw() {
+  renderTabs();
+  renderRunLine();
+  var main = document.getElementById("main");
+  main.textContent = "";
+
+  if (state.tab === "verdict") {
+    var wide = el("div", "col col-wide");
+    wide.appendChild(renderVerdict());
+    main.appendChild(wide);
+  } else if (state.tab === "canvas") {
+    renderCanvas();
+  } else if (state.tab === "conversation") {
+    var left = el("div", "col col-main");
+    left.appendChild(renderConversation());
+    var side = el("div", "col col-side");
+    side.appendChild(renderRail());
+    main.appendChild(left);
+    main.appendChild(side);
+  } else {
+    var mid = el("div", "col col-main");
+    mid.appendChild(renderIntegration(state.tab));
+    var rail = el("div", "col col-side");
+    rail.appendChild(renderRail());
+    main.appendChild(mid);
+    main.appendChild(rail);
+  }
+  renderDrawer();
+}
+
+function fail(message, hint) {
+  var main = document.getElementById("main");
+  main.textContent = "";
+  var panel = el("div", "panel");
+  var box = el("div", "empty", message);
+  if (hint) {
+    box.appendChild(document.createElement("br"));
+    box.appendChild(el("code", null, hint));
+  }
+  panel.appendChild(box);
+  main.appendChild(panel);
+}
+
+function boot(doc) {
+  DOC = doc;
+  if (doc.artifact_css) {
+    // The artifact stylesheet travels in the bundle rather than being copied
+    // here, so the cards on this page cannot drift from the ones the approver
+    // saw in the local approval surface.
+    var s = document.createElement("style");
+    s.textContent = doc.artifact_css;
+    document.head.appendChild(s);
+  }
+  if (!(doc.runs || []).length) {
+    fail("This bundle contains no runs.",
+         "python -m ctrl_a_jr.export --out web/evidence.json");
+    return;
+  }
+  // Stable per-event identity for selection. Assigned here rather than exported
+  // because it is an index into a list this page already holds.
+  doc.runs.forEach(function (r) {
+    (r.events || []).forEach(function (e, i) { e._i = i; });
+  });
+  draw();
+}
+
+fetch("evidence.json", { cache: "no-store" })
+  .then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  })
+  .then(boot)
+  .catch(function (err) {
+    fail("No evidence.json alongside this page (" + err.message + "). Generate one, " +
+         "then serve this directory over HTTP — a file:// page cannot fetch it.",
+         "python -m ctrl_a_jr.export --out web/evidence.json");
+  });
+</script>
+</body>
+</html>

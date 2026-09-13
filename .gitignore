@@ -28,3 +28,6 @@ verdict.json
 
 # Fan-out agent worktrees live here; they are checkouts, not content.
 .claude/worktrees/
+
+.vercel
+public/evidence.json
