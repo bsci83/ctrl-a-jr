@@ -19,7 +19,18 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const generated = result.ok ? result.bundle.generated_at : null;
 
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Applied before first paint. Without this a light-mode visitor gets a
+            full dark repaint on every navigation, because the stored choice is
+            only readable on the client. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{if(localStorage.getItem('ctrla-theme')==='light')document.documentElement.setAttribute('data-theme','light')}catch(e){}",
+          }}
+        />
+      </head>
       <body className="min-h-screen bg-[var(--surface)] text-[var(--on-surface)]">
         <TopNav commit={commit} generatedAt={generated ? stamp(generated) : null} />
         <main className="mx-auto w-full max-w-[1600px] px-4 pb-16 sm:px-6">{children}</main>

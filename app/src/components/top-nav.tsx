@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+
+import { ThemeToggle } from "./theme-toggle";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
@@ -134,6 +136,9 @@ export function TopNav({
               exported {generatedAt}
             </span>
           ) : null}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <ThemeToggle />
         </div>
       </div>
     </header>
