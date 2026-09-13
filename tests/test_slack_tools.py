@@ -136,3 +136,61 @@ def test_an_empty_channel_is_refused_at_construction():
     for bad in ("", "   ", None):
         with pytest.raises(ValueError, match="channel"):
             slack_tools.SlackClient("xoxb-x", bad, http=FakeHTTP({}))
+
+
+# ── the approval card: posted by the GATE, never by the model ────────────────
+
+def test_the_approval_card_is_not_a_registered_tool():
+    """A model that can post its own approval request has self-approval with one
+    extra hop. The card must be unreachable from the registry."""
+    reg = Registry()
+    slack_tools.register_slack_tools(reg, slack_tools.SlackClient("xoxb-x", "#ar",
+                                                                 http=FakeHTTP({})))
+    assert not any("approval" in n for n in reg.names())
+    assert reg.mutating_names() == ["slack_post_message"]
+    assert [t["name"] for t in reg.schemas()] == reg.names()
+
+
+def test_the_card_goes_to_the_configured_channel_with_both_buttons():
+    http = FakeHTTP({"ok": True})
+    slack_tools.SlackClient("xoxb-x", "C0REAL", http=http).post_approval_request(
+        "ap_123", "gmail_send", "To: ada@example.com")
+    payload = http.calls[0][2]
+    assert payload["channel"] == "C0REAL"
+    actions = [b for b in payload["blocks"] if b["type"] == "actions"][0]["elements"]
+    assert [e["action_id"] for e in actions] == [slack_tools.APPROVE_ACTION_ID,
+                                                 slack_tools.DENY_ACTION_ID]
+    assert {e["value"] for e in actions} == {"ap_123"}
+
+
+def test_the_card_has_no_channel_parameter():
+    """Spec invariant 4 holds here too: the destination is configuration."""
+    import inspect
+    params = inspect.signature(slack_tools.SlackClient.post_approval_request).parameters
+    assert "channel" not in params
+
+
+def test_an_over_long_body_is_truncated_rather_than_rejected_by_slack():
+    """Slack rejects the whole message when a section exceeds 3000 chars, so an
+    over-long customer email would otherwise cost the operator the card."""
+    http = FakeHTTP({"ok": True})
+    slack_tools.SlackClient("xoxb-x", "#ar", http=http).post_approval_request(
+        "ap_1", "gmail_send", "x" * 9000)
+    sections = [b for b in http.calls[0][2]["blocks"] if b["type"] == "section"]
+    assert all(len(b["text"]["text"]) <= slack_tools.SECTION_TEXT_LIMIT for b in sections)
+    assert any("truncated" in b["text"]["text"] for b in sections)
+
+
+def test_block_text_neutralises_slack_markup_from_a_customer_body():
+    """`<https://evil|Click here>` quoted from a customer email must not become a
+    real disguised link inside the card an operator is about to trust."""
+    out = slack_tools.to_block_text("see <https://evil.test|Click here> & co")
+    assert "<https://evil.test|Click here>" not in out
+    assert "&lt;https://evil.test|Click here&gt;" in out
+    assert "&amp; co" in out
+
+
+def test_block_text_strips_html_from_a_rendered_artifact():
+    out = slack_tools.to_block_text('<div class="art-body">You owe $799</div>')
+    assert "<div" not in out
+    assert "You owe $799" in out
