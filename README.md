@@ -3,7 +3,7 @@
 An AI agent for an auto-detailing shop that takes real action across **Gmail, Stripe and Slack** —
 and cannot change anything in the world without a human seeing the exact artifact and approving it.
 
-**Demo video:** _(2 min — link to be added)_
+**Demo video:** https://youtu.be/lR-FLUIythA
 **Live approval surface:** https://ctrl-a-jr.vercel.app
 **Built for:** Multi-App AI Agent Hackathon, 2026-09-13
 
