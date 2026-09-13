@@ -1,3 +1,5 @@
+import pytest
+
 from ctrl_a_jr import providers
 
 
@@ -43,16 +45,12 @@ def test_switch_renders_the_reason_for_approval():
 
 def test_a_missing_model_key_names_the_variable(monkeypatch):
     """A KeyError traceback mid-run is the worst place for an ugly failure."""
-    import pytest
-    from ctrl_a_jr import providers as p
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(SystemExit, match="ANTHROPIC_API_KEY"):
-        p.client_from_env(p.ProviderState("minimax", "MiniMax-M3"))
+        providers.client_from_env(providers.ProviderState("minimax", "MiniMax-M3"))
 
 
 def test_a_missing_fallback_key_names_the_variable(monkeypatch):
-    import pytest
-    from ctrl_a_jr import providers as p
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(SystemExit, match="OPENROUTER_API_KEY"):
-        p.client_from_env(p.ProviderState("openrouter", "some-model"))
+        providers.client_from_env(providers.ProviderState("openrouter", "some-model"))
