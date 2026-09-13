@@ -12,6 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
 
+from .activity import read_log
 from .approval import ApprovalStore
 from .types import ApprovalRecord, Decision
 
@@ -28,12 +29,81 @@ button{font:14px system-ui;padding:9px 20px;border-radius:6px;border:0;
        cursor:pointer;margin-right:8px}
 .ok{background:#1a7f37;color:#fff}.no{background:#cf222e;color:#fff}
 .empty{color:#6b6b6b;text-align:center;padding:48px}
+.strip{display:flex;flex-direction:column;gap:6px;margin-bottom:24px}
+.act{display:flex;align-items:center;gap:10px;font:13px ui-monospace,monospace;
+     color:#4a4a4a;background:#fff;border:1px solid #eeebe6;border-radius:6px;
+     padding:7px 12px}
+.act .ico{width:16px;text-align:center;flex:0 0 16px}
+.act .det{color:#8a8a8a;margin-left:auto;font-size:12px}
+.act.err{color:#cf222e;border-color:#f5c2c0;background:#fff6f5}
+.act.gate{color:#8a6d3b;border-color:#f0e0b8;background:#fdf6e3;font-weight:600}
+.runid{font:11px ui-monospace,monospace;color:#9a9a9a;margin:0 0 8px}
 """
 
 
-def render_page(records: list[ApprovalRecord]) -> str:
+ICONS = {
+    "tool_call": "*", "tool_refused": "x", "approval_requested": "?",
+    "approval_resolved": "!", "payload_mismatch": "!", "model_turn": ">",
+    "provider_transport_failure": "x", "round_limit_reached": "-",
+    "content_block_dropped": "-",
+}
+
+# Newest last, so the eye lands where the agent currently is.
+STRIP_LIMIT = 14
+
+
+def render_strip(events: list[dict]) -> str:
+    """Live feed of what the agent is doing.
+
+    Shape borrowed from ctrl-a's activity-strip: compact rows rather than a log
+    dump, an icon per kind, and a distinct style for the state that matters. It
+    renders nothing when there is nothing — an empty strip is better than a strip
+    announcing its own emptiness.
+    """
+    if not events:
+        return ""
+    rows = []
+    for e in events[-STRIP_LIMIT:]:
+        kind = str(e.get("event", "?"))
+        tool = str(e.get("tool") or "")
+        cls = "act"
+        if kind in ("tool_refused", "payload_mismatch", "provider_transport_failure"):
+            cls += " err"
+        elif kind == "approval_requested":
+            cls += " gate"
+
+        if kind == "model_turn":
+            label, detail = f"thinking ({e.get('model', '?')})", f"round {e.get('round', '?')}"
+        elif kind == "tool_call":
+            label = tool
+            detail = "ok" if e.get("ok") else f"failed: {str(e.get('error', ''))[:40]}"
+            if not e.get("ok"):
+                cls += " err"
+        elif kind == "approval_requested":
+            label, detail = f"{tool} — waiting for you", "gate"
+        elif kind == "approval_resolved":
+            label, detail = tool, str(e.get("decision", ""))
+        elif kind == "tool_refused":
+            label, detail = tool, str(e.get("reason", "refused"))
+        else:
+            label, detail = kind, tool
+
+        rows.append(
+            f'<div class="{cls}"><span class="ico">{html.escape(ICONS.get(kind, "-"))}</span>'
+            f"<span>{html.escape(label)}</span>"
+            f'<span class="det">{html.escape(detail)}</span></div>'
+        )
+    run = events[-1].get("run_id")
+    head = f'<p class="runid">run {html.escape(str(run))}</p>' if run else ""
+    return head + '<div class="strip">' + "".join(rows) + "</div>"
+
+
+def render_page(records: list[ApprovalRecord], events: list[dict] | None = None) -> str:
+    strip = render_strip(events or [])
     if not records:
-        body = '<p class="empty">Nothing waiting for you.</p>'
+        # Only claim nothing is happening when nothing is. With a live strip the
+        # page is the agent working, not a waiting room.
+        body = "" if strip else '<p class="empty">Nothing waiting for you.</p>'
     else:
         cards = []
         for r in records:
@@ -52,8 +122,8 @@ def render_page(records: list[ApprovalRecord]) -> str:
         "<title>ctrl-a JR — approvals</title>"
         "<meta http-equiv='refresh' content='2'>"
         f"<style>{_STYLE}</style></head><body><main>"
-        "<h1>Waiting for your authorization</h1>"
-        f"{body}</main></body></html>"
+        f"<h1>{'Waiting for your authorization' if records else 'ctrl-a JR'}</h1>"
+        f"{strip}{body}</main></body></html>"
     )
 
 
@@ -85,7 +155,7 @@ class WebApprover:
                     self.send_response(403)
                     self.end_headers()
                     return
-                page = render_page(approver.store.pending()).encode("utf-8")
+                page = render_page(approver.store.pending(), read_log()).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(page)))

@@ -198,3 +198,64 @@ def test_post_to_an_unexpected_path_does_not_resolve_anything():
         assert record.id not in approver._decisions
     finally:
         approver.stop()
+
+
+# ── the activity strip ────────────────────────────────────────────────────────
+# Shape borrowed from ctrl-a's activity-strip.tsx: compact rows, an icon per
+# kind, a distinct style for the state that matters, and nothing at all when
+# there is nothing.
+
+def _ev(event, **kw):
+    return {"event": event, "run_id": "r1", **kw}
+
+
+def test_the_strip_renders_nothing_when_there_is_nothing():
+    """An empty strip beats a strip announcing its own emptiness."""
+    assert server.render_strip([]) == ""
+
+
+def test_the_strip_shows_tool_calls_as_they_happen():
+    html_ = server.render_strip([
+        _ev("model_turn", model="MiniMax-M3", round=1),
+        _ev("tool_call", tool="stripe_get_invoice", ok=True),
+    ])
+    assert "stripe_get_invoice" in html_
+    assert "MiniMax-M3" in html_
+
+
+def test_a_failed_tool_call_is_visually_distinct():
+    html_ = server.render_strip([_ev("tool_call", tool="gmail_send", ok=False,
+                                     error="smtp auth failed")])
+    assert "err" in html_
+    assert "smtp auth failed" in html_
+
+
+def test_the_pending_gate_is_visually_distinct():
+    """The pause IS the product. It gets its own style, not an absence."""
+    html_ = server.render_strip([_ev("approval_requested", tool="gmail_send")])
+    assert "gate" in html_
+    assert "waiting for you" in html_
+
+
+def test_the_strip_escapes_attacker_influenced_content():
+    html_ = server.render_strip([_ev("tool_call", tool="<script>alert(1)</script>", ok=True)])
+    assert "<script>alert(1)</script>" not in html_
+    assert "&lt;script&gt;" in html_
+
+
+def test_the_strip_is_capped_and_shows_the_newest():
+    events = [_ev("tool_call", tool=f"t{i}", ok=True) for i in range(40)]
+    html_ = server.render_strip(events)
+    assert "t39" in html_
+    assert "t0</span>" not in html_
+
+
+def test_the_strip_names_the_run():
+    assert "r1" in server.render_strip([_ev("tool_call", tool="x", ok=True)])
+
+
+def test_the_page_shows_activity_even_with_no_pending_approval():
+    """Between approvals the page used to be blank. That is most of a run."""
+    page = server.render_page([], [_ev("tool_call", tool="stripe_get_invoice", ok=True)])
+    assert "stripe_get_invoice" in page
+    assert "Nothing waiting for you" not in page
