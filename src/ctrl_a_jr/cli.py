@@ -117,8 +117,15 @@ def main(argv: list[str] | None = None) -> int:
     eval_p.add_argument("--out", default="verdict.json", type=Path)
     fx_p = sub.add_parser("fixtures", help="seed / list / tear down Stripe test fixtures")
     fx_p.add_argument("action", choices=["seed", "list", "teardown"])
+    sub.add_parser("doctor", help="check every credential and connection before a run")
 
     args = parser.parse_args(argv)
+
+    if args.cmd == "doctor":
+        from .doctor import format_report, run_doctor
+        checks = run_doctor()
+        print(format_report(checks))
+        return 0 if all(c.ok for c in checks) else 1
 
     if args.cmd == "fixtures":
         return _fixtures(args.action)
