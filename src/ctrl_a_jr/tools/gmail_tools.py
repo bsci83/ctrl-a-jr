@@ -107,6 +107,38 @@ class _IMAP:
         finally:
             c.logout()
 
+    def recent(self, limit: int) -> list[dict]:
+        """The most recent messages in the inbox, newest last.
+
+        `search` needs a sender, which is right for "what did THIS customer
+        already say" and useless for "what is waiting for me". A deployed agent
+        you can talk to has to be able to look at its own inbox; without this it
+        answers "I do not have an inbox address to search against", which is
+        what the first live cloud run actually did.
+
+        No caller-supplied value reaches the IMAP command line here — the search
+        key is the literal ALL — so there is nothing to inject. `limit` is
+        clamped to an int and applied in Python.
+        """
+        c = self._conn()
+        try:
+            _typ, data = c.search(None, "ALL")
+            uids = data[0].split()[-max(1, min(int(limit), 25)):] if data and data[0] else []
+            out = []
+            for u in uids:
+                # Headers only: the body is a separate, deliberate read.
+                _t, d = c.fetch(u, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                head = email.message_from_bytes(d[0][1]) if d and d[0] else None
+                out.append({
+                    "uid": u.decode(),
+                    "from": (head.get("From", "") if head else ""),
+                    "subject": (head.get("Subject", "") if head else ""),
+                    "date": (head.get("Date", "") if head else ""),
+                })
+            return out
+        finally:
+            c.logout()
+
     def fetch(self, uid: str) -> dict:
         c = self._conn()
         try:
@@ -138,6 +170,9 @@ class GmailClient:
         # would otherwise skip the guard entirely. This is the layer the tool
         # calls, so it is the layer that must hold.
         return self.imap.search(_safe_address(from_address), limit)
+
+    def list_recent(self, limit: int = 10) -> list[dict]:
+        return self.imap.recent(limit)
 
     def read_thread(self, uid: str) -> dict:
         return self.imap.fetch(_safe_uid(uid))
@@ -172,6 +207,15 @@ def register_gmail_tools(registry: Registry, client: GmailClient) -> None:
                 "required": ["from_address"]},
         mutating=False,
         run=_wrap(lambda from_address, limit=5: client.search_threads(from_address, limit)),
+    ))
+    registry.register(ToolSpec(
+        name="gmail_list_inbox",
+        description="List what is waiting in the shop inbox: sender, subject and date for the "
+                    "most recent messages. Start here when you are asked what needs handling. "
+                    "Read-only.",
+        schema={"type": "object", "properties": {"limit": {"type": "integer"}}},
+        mutating=False,
+        run=_wrap(lambda limit=10: client.list_recent(limit)),
     ))
     registry.register(ToolSpec(
         name="gmail_read_thread",

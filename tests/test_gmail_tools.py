@@ -242,3 +242,57 @@ def test_the_transports_normalise_what_they_are_constructed_with():
         "abcdefghijklmnop")
     assert gmail_tools._IMAP("me@example.com", "abcd efgh ijkl mnop").app_password == (
         "abcdefghijklmnop")
+
+
+# ── listing the inbox ─────────────────────────────────────────────────────────
+# search() needs a sender, which is right for "what did this customer say" and
+# useless for "what is waiting for me". The first live cloud run answered
+# "I don't have a known shop inbox address to search against" and stopped.
+
+def test_list_inbox_is_registered_read_only():
+    reg = Registry()
+    gmail_tools.register_gmail_tools(reg, _client())
+    assert "gmail_list_inbox" in reg.names()
+    assert reg.mutating_names() == ["gmail_send"]
+
+
+def test_list_recent_returns_sender_subject_and_date():
+    class FakeIMAP2:
+        def recent(self, limit):
+            return [{"uid": "7", "from": "Marcus Webb <m@example.com>",
+                     "subject": "Tahoe detail?", "date": "Sun, 13 Sep 2026"}]
+    rows = gmail_tools.GmailClient("me@example.com", "pw", imap=FakeIMAP2()).list_recent(5)
+    assert rows[0]["subject"] == "Tahoe detail?"
+    assert "Marcus Webb" in rows[0]["from"]
+
+
+class _ListConn(_FakeConn):
+    def __init__(self, uids, headers):
+        super().__init__(search_data=[uids])
+        self._headers = headers
+        self.fetch_specs = []
+
+    def search(self, charset, key, value=None):
+        self.key = key
+        return "OK", self.search_data
+
+    def fetch(self, uid, spec):
+        self.fetch_specs.append(spec)
+        return "OK", [(uid, self._headers)]
+
+
+def test_listing_uses_a_literal_ALL_key_and_peeks_only_headers():
+    """Nothing caller-supplied reaches the IMAP command line, and listing must
+    not mark mail read — gmail_list_inbox is ungated like the other reads."""
+    conn = _ListConn(b"1 2 3", b"From: a@b.co\r\nSubject: hi\r\nDate: today\r\n\r\n")
+    rows = _ProbeIMAP(conn).recent(limit=2)
+    assert conn.key == "ALL"
+    assert all("PEEK" in s for s in conn.fetch_specs)
+    assert len(rows) == 2
+
+
+def test_the_limit_is_clamped_rather_than_trusted():
+    conn = _ListConn(b"1 2 3 4 5", b"From: a@b.co\r\nSubject: hi\r\n\r\n")
+    assert len(_ProbeIMAP(conn).recent(limit=9999)) == 5   # capped by what exists
+    conn2 = _ListConn(b"1 2 3 4 5", b"From: a@b.co\r\nSubject: hi\r\n\r\n")
+    assert len(_ProbeIMAP(conn2).recent(limit=0)) == 1     # never zero or negative
