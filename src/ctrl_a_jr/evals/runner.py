@@ -12,7 +12,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from ..activity import read_log
+from ..activity import LogIntegrity, read_log_with_integrity
 from . import checks
 from .checks import CheckResult
 
@@ -98,7 +98,8 @@ def roll_up(per_run: list[dict]) -> list[CheckResult]:
 
 
 def build_verdict(results: list[CheckResult], model: str, provider: str,
-                  records: list[dict] | None = None) -> dict:
+                  records: list[dict] | None = None,
+                  integrity: LogIntegrity | None = None) -> dict:
     counts = {"pass": 0, "fail": 0, "inconclusive": 0}
     for r in results:
         counts[r.verdict] = counts.get(r.verdict, 0) + 1
@@ -110,15 +111,29 @@ def build_verdict(results: list[CheckResult], model: str, provider: str,
         "model": labelled_model,
         "provider": labelled_provider,
         "labelled_from": "activity log",
-        "exit": counts["fail"] == 0 and counts["pass"] > 0,
+        # An unsound log cannot produce a green verdict. Every check here reads
+        # the same stream, so a stream that lost events makes all four of them
+        # claims about a subset nobody can bound.
+        "exit": (counts["fail"] == 0 and counts["pass"] > 0
+                 and (integrity is None or integrity.sound)),
         "checks": [
             {"id": r.id, "verdict": r.verdict, "evidence": r.evidence, "severity": r.severity}
             for r in results
         ],
         "aggregate": counts,
+        "log_integrity": {
+            "sound": integrity.sound if integrity else None,
+            "evidence": integrity.describe() if integrity else "not measured",
+            "malformed_lines": integrity.malformed_lines if integrity else None,
+            "write_failures": integrity.write_failures if integrity else None,
+        },
         "regressed_this_cycle": [],
         "disputed": [],
-        "next_actions": [r.evidence for r in results if r.verdict == "fail"],
+        "next_actions": (
+            [r.evidence for r in results if r.verdict == "fail"]
+            + ([] if integrity is None or integrity.sound
+               else [f"REPAIR THE EVIDENCE STREAM: {integrity.describe()}"])
+        ),
     }
 
 
@@ -127,7 +142,7 @@ def run_evals(model: str, provider: str, log_path: Path | None = None,
     """`model`/`provider` are accepted for backward compatibility but ignored for the
     verdict body — see `labels_from_log`. A caller cannot mislabel a run it did not
     produce."""
-    records = read_log(log_path)
+    records, integrity = read_log_with_integrity(log_path)
     runs = group_by_run(records)
 
     per_run = [
@@ -146,7 +161,8 @@ def run_evals(model: str, provider: str, log_path: Path | None = None,
     # reads a denial in run 1 followed by an approved call to the same tool in
     # run 2 as the agent retrying after a refusal — failing a run that was right.
     results = roll_up(per_run) if per_run else [fn([]) for fn in DETERMINISTIC]
-    verdict = build_verdict(results, model=model, provider=provider, records=records)
+    verdict = build_verdict(results, model=model, provider=provider, records=records,
+                            integrity=integrity)
     verdict["runs"] = len(runs)
     verdict["per_run"] = per_run
     if out is not None:

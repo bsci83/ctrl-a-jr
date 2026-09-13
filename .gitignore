@@ -1,5 +1,6 @@
 # Activity logs contain real customer data — never commit.
 *.jsonl
+*.jsonl.errors
 
 # Secrets
 .env
