@@ -76,7 +76,8 @@ def _build(out_dir: Path) -> tuple[Registry, ProviderState]:
     register_stripe_tools(reg, StripeClient(_require("STRIPE_SECRET_KEY")))
     register_gmail_tools(reg, GmailClient(_require("GMAIL_ADDRESS"),
                                           _require("GMAIL_APP_PASSWORD")))
-    register_slack_tools(reg, SlackClient(_require("SLACK_BOT_TOKEN")))
+    register_slack_tools(reg, SlackClient(_require("SLACK_BOT_TOKEN"),
+                                          _require("CTRLA_JR_SLACK_CHANNEL")))
     register_report_tools(reg, out_dir)
     state = ProviderState(os.environ.get("CTRLA_JR_PROVIDER", "minimax"),
                           os.environ.get("CTRLA_JR_MODEL", "MiniMax-M3"))

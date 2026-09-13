@@ -69,6 +69,11 @@ class Guard:
                        approval_id=approval_id, error=repr(exc))
             return ToolResult(False, "", str(exc))
 
+        # A tool that RETURNS a failure logged ok=False and nothing else, so the
+        # first live Slack failure recorded that something went wrong and not what.
+        # Diagnosing it needed the API re-called by hand. The exception path already
+        # logged an error; this path did not.
         log_action("tool_call", tool=name, ok=result.ok, mutating=spec.mutating,
-                   approval_id=approval_id, result_chars=len(result.content))
+                   approval_id=approval_id, result_chars=len(result.content),
+                   error=(result.error or None) if not result.ok else None)
         return result
