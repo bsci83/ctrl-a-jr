@@ -74,6 +74,16 @@ def _approve_url(approval_id: str, headers=None) -> str:
     return f"{base}/api/approve/{approval_id}?k={_nonce(approval_id)}"
 
 
+def approve_url(approval_id: str, headers=None) -> str:
+    """Public name for `_approve_url`, for the run endpoints in `runs.py`.
+
+    Same function, not a second one: an approval link built two ways is an
+    approval link that can be built WRONG one way, and a nonce mismatch reads as
+    "unknown approval" rather than as a bug.
+    """
+    return _approve_url(approval_id, headers)
+
+
 def _host(headers) -> str:
     getter = getattr(headers, "get", None)
     value = getter("Host") if getter is not None else None

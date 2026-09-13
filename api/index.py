@@ -30,6 +30,10 @@ from api._lib.routes import (  # noqa: E402
     push,
     slack_interactive,
 )
+# Imported lazily inside `_route_for`: this module pulls in the whole agent
+# package (and `anthropic`), and a cold start for /api/decide should not pay for
+# it — nor should an ImportError here be able to take down the approval surface,
+# which is what a human needs when something has already gone wrong.
 
 MAX_BODY = 1 << 20  # 1 MiB; a rendered artifact is kilobytes
 
@@ -38,6 +42,15 @@ def _route_for(method: str, path: str):
     """Longest-prefix match, most specific first."""
     if path.startswith("/api/slack/interactive"):
         return slack_interactive
+    if path.startswith("/api/slack/events"):
+        from api._lib.runs import slack_events
+        return slack_events
+    if path.startswith("/api/runs"):
+        # POST creates, GET lists; /api/runs/<id>[/messages|/advance] below it.
+        # The sub-routing lives in runs.py so the shape of the resource is stated
+        # once, in the module that owns it.
+        from api._lib.runs import runs
+        return runs
     if path.startswith("/api/decide"):
         return decide
     if path.startswith("/api/approve/"):
@@ -75,10 +88,19 @@ def app(environ, start_response):
     if query:
         path = f"{path}?{query}"
 
-    route = _route_for(method, path)
-    if route is None:
-        resp: Response = json_response(404, {"error": "not found"})
+    resp: Response
+    try:
+        route = _route_for(method, path)
+    except Exception:  # noqa: BLE001 - a lazy import failed
+        # A broken import must be a 500 with no traceback, not a 404: 404 would
+        # make a deploy that cannot load the agent package look like a deploy
+        # that simply does not have these routes.
+        route = None
+        resp = json_response(500, {"error": "internal error"})
     else:
+        resp = json_response(404, {"error": "not found"})
+
+    if route is not None:
         try:
             length = int(environ.get("CONTENT_LENGTH") or 0)
         except ValueError:

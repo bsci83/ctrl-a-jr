@@ -1,1 +1,5 @@
 httpx>=0.27
+# The run endpoints (api/_lib/agent.py) build the real registry and model client
+# server-side. Without this the deployed function imports `ctrl_a_jr.providers`
+# and fails at cold start, and /api/runs is a 500 with no message.
+anthropic>=0.40
