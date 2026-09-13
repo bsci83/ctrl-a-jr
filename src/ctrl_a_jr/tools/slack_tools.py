@@ -26,7 +26,10 @@ class _Httpx:
 
 class SlackClient:
     def __init__(self, bot_token: str, http: Any | None = None) -> None:
-        if not bot_token.startswith("xoxb-"):
+        # isinstance first: a None token must fail with the message that names the
+        # problem, not an AttributeError traceback. Stripe's guard was fixed this way
+        # in review; this one was missed until a verification pass caught the drift.
+        if not isinstance(bot_token, str) or not bot_token.startswith("xoxb-"):
             raise ValueError("expected a Slack bot token beginning xoxb-")
         self.token = bot_token
         self.http = http or _Httpx()

@@ -80,3 +80,10 @@ def test_bot_token_is_sent_as_a_bearer_header_and_never_in_the_body():
     slack_tools.SlackClient("xoxb-secret", http=HeaderCapturingHTTP()).post_message("#c", "hi")
     assert captured["headers"]["Authorization"] == "Bearer xoxb-secret"
     assert "xoxb-secret" not in str(captured["json"])
+
+
+def test_a_non_string_token_raises_value_error_not_attribute_error():
+    """Parity with StripeClient. A None token must name the problem, not hand back
+    an AttributeError traceback — found by a verification pass, not by review."""
+    with pytest.raises(ValueError, match="xoxb-"):
+        slack_tools.SlackClient(None, http=FakeHTTP({}))

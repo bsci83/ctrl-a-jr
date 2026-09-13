@@ -52,16 +52,30 @@ class AnthropicCompatClient:
         return self._client.messages.create(**kwargs)
 
 
+def _require_key(name: str) -> str:
+    """Name the missing variable instead of raising a KeyError traceback.
+
+    The CLI's credential lookups already do this; these two were bare dict access,
+    so a missing model key failed differently from a missing Stripe key. Found in a
+    verification pass — an ugly failure here lands mid-run, which is the worst place
+    for it.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"Missing required environment variable: {name}. See .env.example.")
+    return value
+
+
 def client_from_env(state: ProviderState) -> AnthropicCompatClient:
     if state.provider == "openrouter":
         return AnthropicCompatClient(
-            api_key=os.environ["OPENROUTER_API_KEY"],
+            api_key=_require_key("OPENROUTER_API_KEY"),
             base_url="https://openrouter.ai/api/v1",
             model=state.model,
             provider="openrouter",
         )
     return AnthropicCompatClient(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
+        api_key=_require_key("ANTHROPIC_API_KEY"),
         base_url=os.environ.get("ANTHROPIC_BASE_URL") or None,
         model=state.model,
         provider=state.provider,
