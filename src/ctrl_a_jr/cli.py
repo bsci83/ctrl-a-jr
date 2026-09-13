@@ -40,16 +40,26 @@ not attempt the same thing through a different tool."""
 USER_TASK = "Recover the most overdue open invoice."
 
 
-def load_dotenv(path: Path = Path(".env")) -> None:
-    """Minimal .env support. A real dependency is not worth it for KEY=value."""
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+ENV_FILES = (Path(".env.local"), Path(".env"))
+
+
+def load_dotenv(paths: tuple[Path, ...] = ENV_FILES) -> None:
+    """Minimal .env support. A real dependency is not worth it for KEY=value.
+
+    `.env.local` is read first and wins, matching the convention used across the
+    rest of this operator's projects; `.env` is the committed-adjacent fallback.
+    Values already in the real environment beat both — `setdefault` never
+    overwrites what the shell set.
+    """
+    for path in paths:
+        if not path.exists():
             continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def _require(name: str) -> str:
