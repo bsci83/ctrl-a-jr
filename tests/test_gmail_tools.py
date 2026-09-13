@@ -225,3 +225,20 @@ def test_the_search_tool_surfaces_a_refusal_as_a_tool_error():
     out = reg.get("gmail_search_threads").run(from_address="a@b.c\r\nZ1 EXPUNGE")
     assert out.ok is False
     assert "email address" in (out.error or "")
+
+
+def test_an_app_password_pasted_with_spaces_is_normalised():
+    """Google shows the 16 characters as four groups of four, and that is what
+    people paste. smtplib sends the string verbatim, so the spaces would come
+    back as 'Username and Password not accepted' — a formatting problem wearing
+    a wrong-password error message."""
+    assert gmail_tools.normalize_app_password("abcd efgh ijkl mnop") == "abcdefghijklmnop"
+    assert gmail_tools.normalize_app_password("  abcd efgh ijkl mnop  ") == "abcdefghijklmnop"
+    assert gmail_tools.normalize_app_password("abcdefghijklmnop") == "abcdefghijklmnop"
+
+
+def test_the_transports_normalise_what_they_are_constructed_with():
+    assert gmail_tools._SMTP("me@example.com", "abcd efgh ijkl mnop").app_password == (
+        "abcdefghijklmnop")
+    assert gmail_tools._IMAP("me@example.com", "abcd efgh ijkl mnop").app_password == (
+        "abcdefghijklmnop")

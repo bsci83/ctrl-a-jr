@@ -45,6 +45,18 @@ def _safe_address(value: object) -> str:
     return value
 
 
+def normalize_app_password(value: str) -> str:
+    """Strip whitespace from a Google App Password.
+
+    Google displays it as four groups of four ("abcd efgh ijkl mnop") and users
+    paste what they see. The credential is 16 characters; the spaces are
+    presentation. smtplib/imaplib send the string verbatim, so an unstripped
+    paste is a confusing "Username and Password not accepted" that looks like a
+    wrong password rather than a formatting problem.
+    """
+    return "".join(value.split())
+
+
 def _safe_uid(value: object) -> str:
     if not isinstance(value, str) or not _UID_RE.match(value):
         raise ValueError("refusing to fetch: uid must be digits only.")
@@ -53,7 +65,8 @@ def _safe_uid(value: object) -> str:
 
 class _SMTP:
     def __init__(self, address: str, app_password: str) -> None:
-        self.address, self.app_password = address, app_password
+        self.address = address
+        self.app_password = normalize_app_password(app_password)
 
     def send(self, from_addr: str, to_addr: str, message_bytes: bytes) -> None:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
@@ -63,7 +76,8 @@ class _SMTP:
 
 class _IMAP:
     def __init__(self, address: str, app_password: str) -> None:
-        self.address, self.app_password = address, app_password
+        self.address = address
+        self.app_password = normalize_app_password(app_password)
 
     def _conn(self):
         c = imaplib.IMAP4_SSL("imap.gmail.com", 993)

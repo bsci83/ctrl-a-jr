@@ -41,8 +41,15 @@ def check_stripe() -> Check:
         return Check("Stripe", False, f"{type(exc).__name__}: {str(exc)[:60]}")
 
 
+def _gmail_password() -> str:
+    """Normalised exactly as the tools normalise it, so doctor tests the same
+    credential the run will use — not a variant that happens to work here."""
+    from .tools.gmail_tools import normalize_app_password
+    return normalize_app_password(_env("GMAIL_APP_PASSWORD"))
+
+
 def check_gmail_smtp() -> Check:
-    addr, pw = _env("GMAIL_ADDRESS"), _env("GMAIL_APP_PASSWORD")
+    addr, pw = _env("GMAIL_ADDRESS"), _gmail_password()
     if not addr or not pw:
         return Check("Gmail SMTP", False, "GMAIL_ADDRESS / GMAIL_APP_PASSWORD not set")
     try:
@@ -59,7 +66,7 @@ def check_gmail_smtp() -> Check:
 
 def check_gmail_imap() -> Check:
     """IMAP is OFF by default on some accounts — a distinct failure from SMTP."""
-    addr, pw = _env("GMAIL_ADDRESS"), _env("GMAIL_APP_PASSWORD")
+    addr, pw = _env("GMAIL_ADDRESS"), _gmail_password()
     if not addr or not pw:
         return Check("Gmail IMAP", False, "GMAIL_ADDRESS / GMAIL_APP_PASSWORD not set")
     try:
@@ -81,7 +88,22 @@ def check_gmail_imap() -> Check:
         return Check("Gmail IMAP", False, f"{type(exc).__name__}{hint}")
 
 
+# The capability the agent actually needs. auth.test says the key is valid; it
+# says nothing about whether the grant covers this.
+SLACK_REQUIRED_SCOPE = "chat:write"
+
+
 def check_slack() -> Check:
+    """Verify the GRANT, not the key.
+
+    This check used to pass on `auth.test` alone, and on 2026-09-13 it returned
+    green for an app CONFIGURATION token (`xoxe.`, scopes identify +
+    app_configurations:*) that cannot post a message at all. That is the same
+    failure that killed the Composio route four days earlier: the key
+    authenticated flawlessly and the grant behind it was useless. A doctor whose
+    entire job is "find the broken credential before the run does" must not be
+    satisfied by authentication.
+    """
     token = _env("SLACK_BOT_TOKEN")
     if not token:
         return Check("Slack", False, "SLACK_BOT_TOKEN not set")
@@ -92,7 +114,26 @@ def check_slack() -> Check:
         body = r.json()
         if not body.get("ok"):
             return Check("Slack", False, f"{body.get('error', 'unknown')}")
-        return Check("Slack", True, f"{body.get('team', '?')} as {body.get('user', '?')}")
+
+        who = f"{body.get('team', '?')} as {body.get('user', '?')}"
+        if not body.get("bot_id"):
+            return Check("Slack", False,
+                         f"authenticates ({who}) but is not a BOT token — need one "
+                         f"starting xoxb-, from OAuth & Permissions")
+
+        # Slack reports the grant in a response header. Absent means we could not
+        # confirm it, which is not the same as confirming it.
+        scopes = r.headers.get("x-oauth-scopes")
+        if scopes is None:
+            return Check("Slack", False,
+                         f"authenticates ({who}) but Slack returned no scope header — "
+                         f"{SLACK_REQUIRED_SCOPE} unconfirmed")
+        granted = {s.strip() for s in scopes.split(",") if s.strip()}
+        if SLACK_REQUIRED_SCOPE not in granted:
+            return Check("Slack", False,
+                         f"authenticates ({who}) but lacks {SLACK_REQUIRED_SCOPE}; "
+                         f"granted: {sorted(granted)}")
+        return Check("Slack", True, f"{who}, {SLACK_REQUIRED_SCOPE} granted")
     except Exception as exc:  # noqa: BLE001
         return Check("Slack", False, f"{type(exc).__name__}: {str(exc)[:60]}")
 
