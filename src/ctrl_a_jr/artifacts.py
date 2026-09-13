@@ -94,7 +94,29 @@ def _provider(a: dict) -> str:
     )
 
 
+def _lookup(a: dict) -> str:
+    """Read-only calls.
+
+    These never reach the gate, so they had no renderer — the approval page only
+    ever renders things that stop for a human. The evidence page shows a card per
+    tool call, and the plain-table fallback there loses the one fact a reader
+    needs about a read: nothing left the building. Adding these is inert for the
+    gate, because a non-mutating tool never produces an approval record.
+    """
+    return (
+        '<div class="art"><div class="art-h"><b>Read-only</b> lookup — '
+        'nothing leaves your account</div>'
+        f'<div class="art-b">{_rows(sorted(a.items()))}</div></div>'
+    )
+
+
 RENDERERS: dict[str, Callable[[dict], str]] = {
+    "stripe_list_failed_payments": _lookup,
+    "stripe_get_customer": _lookup,
+    "stripe_get_invoice": _lookup,
+    "gmail_search_threads": _lookup,
+    "gmail_read_thread": _lookup,
+    "slack_lookup_user": _lookup,
     "gmail_send": _email,
     "slack_post_message": _slack,
     "stripe_send_invoice": _invoice,

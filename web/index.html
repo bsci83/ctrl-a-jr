@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ctrl-a JR — run evidence</title>
+<!--
+  Read-only evidence surface.
+
+  There is no approve button here and no way to trigger an action from this page.
+  The operable approval surface is the LOCAL page in server.py; credentials never
+  leave the operator's machine, which is the whole thesis. This page renders a
+  bundle that has already been redacted by src/ctrl_a_jr/export.py.
+
+  Everything is a pure function of evidence.json: the same markup works served
+  statically from web/ and, later, against a live document. No build step, no
+  framework, no CDN, no external request of any kind.
+
+  To publish:  python -m ctrl_a_jr.export --out web/evidence.json  &&  vercel deploy
+  web/evidence.json is gitignored: a bundle describes a real run and is generated
+  at deploy time, never committed.
+-->
+<style>
+  :root{
+    --bg:#faf9f7; --panel:#fff; --line:#e3e0db; --line-soft:#eeebe6;
+    --ink:#1a1a1a; --ink-2:#4a4a4a; --ink-3:#8a8a8a;
+    --ok:#1a7f37; --bad:#cf222e; --warn:#8a6d3b; --warn-bg:#fdf6e3; --warn-line:#f0e0b8;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{max-width:100%;overflow-x:hidden}
+  body{font:15px/1.5 system-ui,sans-serif;margin:0;background:var(--bg);color:var(--ink)}
+  header{background:var(--panel);border-bottom:1px solid var(--line);padding:14px 20px}
+  .hrow{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline}
+  h1{font-size:16px;margin:0;font-weight:650}
+  .sub{font:12px var(--mono);color:var(--ink-3)}
+  .sub b{color:var(--ink-2);font-weight:600}
+  .ro{font:11px system-ui;color:var(--warn);background:var(--warn-bg);
+      border:1px solid var(--warn-line);border-radius:20px;padding:2px 10px;margin-left:auto}
+  nav{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+  nav button{font:13px system-ui;padding:6px 14px;border-radius:20px;cursor:pointer;
+             border:1px solid var(--line);background:var(--bg);color:var(--ink-2)}
+  nav button[aria-selected="true"]{background:var(--ink);border-color:var(--ink);color:#fff}
+  nav .count{font:11px var(--mono);opacity:.65;margin-left:6px}
+  main{display:flex;gap:16px;align-items:flex-start;padding:16px 20px 48px;
+       max-width:1400px;margin:0 auto}
+  /* min-width:0 on both panes: without it a long token in the thread widens the
+     flex child and the whole page scrolls sideways instead of the pane. */
+  .thread,.canvas{min-width:0}
+  .thread{flex:1 1 520px}
+  .canvas{flex:1 1 420px;position:sticky;top:16px;max-height:calc(100vh - 32px);
+          overflow-y:auto;overflow-x:hidden}
+  @media (max-width:900px){
+    main{flex-direction:column}
+    .thread,.canvas{flex:1 1 auto;width:100%}
+    .canvas{position:static;max-height:none}
+  }
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+         padding:16px;margin-bottom:16px}
+  .panel h2{font:12px var(--mono);text-transform:uppercase;letter-spacing:.06em;
+            color:var(--ink-3);margin:0 0 12px;font-weight:600}
+  .item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+        font:13px var(--mono);color:var(--ink-2);background:var(--panel);
+        border:1px solid var(--line-soft);border-radius:6px;padding:8px 12px;
+        margin-bottom:6px;cursor:pointer}
+  .item:hover{border-color:var(--line)}
+  .item[aria-current="true"]{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+  .item .ico{flex:0 0 16px;text-align:center}
+  .item .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .det{margin-left:auto;font-size:12px;color:var(--ink-3);flex:0 0 auto;
+             padding-left:10px}
+  .item.err{color:var(--bad);border-color:#f5c2c0;background:#fff6f5}
+  .item.gate{color:var(--warn);border-color:var(--warn-line);background:var(--warn-bg);
+             font-weight:600}
+  .approval{border:1px solid var(--line);border-radius:8px;padding:12px;margin:6px 0 10px;
+            background:var(--panel);cursor:pointer}
+  .approval[aria-current="true"]{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+  .approval .top{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+  .tool{font:12px var(--mono);color:var(--warn);background:var(--warn-bg);
+        padding:2px 8px;border-radius:20px}
+  .badge{font:12px system-ui;font-weight:600;padding:2px 10px;border-radius:20px;
+         margin-left:auto}
+  /* A human saying no and the approval surface disappearing are the same Decision
+     and completely different evidence. They must never look alike. */
+  .badge.approved{background:#e7f4ea;color:var(--ok);border:1px solid #b6ddc1}
+  .badge.human{background:#fdecea;color:var(--bad);border:1px solid #f5c2c0}
+  .badge.machine{background:#f1f0ee;color:var(--ink-2);border:1px dashed #b9b5ae}
+  .badge.pending{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line)}
+  .why{font:12px system-ui;color:var(--ink-3);margin-top:6px}
+  .why.machine{color:var(--ink-2);background:#f6f5f3;border-left:3px solid #b9b5ae;
+               padding:6px 10px;border-radius:0 4px 4px 0}
+  .meta{font:12px var(--mono);color:var(--ink-3);display:flex;flex-wrap:wrap;gap:4px 14px}
+  .check{border:1px solid var(--line-soft);border-left-width:4px;border-radius:6px;
+         padding:10px 12px;margin-bottom:8px;background:var(--panel)}
+  .check.pass{border-left-color:var(--ok)}
+  .check.fail{border-left-color:var(--bad)}
+  /* Inconclusive is not a weaker pass and is never green. */
+  .check.inconclusive{border-left-color:#b9b5ae;background:#f8f7f5}
+  .check .cid{font:13px var(--mono);font-weight:600}
+  .check .cv{font:11px system-ui;font-weight:700;text-transform:uppercase;
+             letter-spacing:.05em;margin-left:8px}
+  .check.pass .cv{color:var(--ok)} .check.fail .cv{color:var(--bad)}
+  .check.inconclusive .cv{color:var(--ink-2)}
+  .check .ev{font:13px/1.5 system-ui;color:var(--ink-2);margin-top:5px;
+             overflow-wrap:anywhere}
+  .claim{border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:14px;
+         background:var(--panel)}
+  .claim.claimed{border-left-color:var(--ok)}
+  .claim.refuted{border-left-color:var(--bad)}
+  .claim.inconclusive,.claim.unavailable{border-left-color:#b9b5ae;background:#f8f7f5}
+  .claim p{margin:0;font:15px/1.5 system-ui;font-weight:600}
+  .claim ol{margin:12px 0 0;padding-left:20px}
+  .claim li{font:13px/1.6 system-ui;color:var(--ink-2);margin-bottom:8px;
+            overflow-wrap:anywhere}
+  .claim .lead{font:11px var(--mono);text-transform:uppercase;letter-spacing:.06em;
+               color:var(--ink-3);margin-bottom:6px;font-weight:600}
+  .integrity{font:13px var(--mono);color:var(--ink-2);background:#f6f5f3;padding:10px 12px;
+             border-radius:6px;overflow-x:auto}
+  .integrity.unsound{color:var(--bad);background:#fff6f5}
+  .empty{color:var(--ink-3);text-align:center;padding:40px 20px;font:14px/1.6 system-ui}
+  .empty code{font:12px var(--mono);background:#f1f0ee;padding:2px 6px;border-radius:4px;
+              overflow-wrap:anywhere}
+  .scroll{overflow-x:auto;max-width:100%}
+  select{font:13px system-ui;padding:5px 8px;border:1px solid var(--line);border-radius:6px;
+         background:var(--panel);color:var(--ink)}
+</style>
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <h1>ctrl-a JR</h1>
+    <span class="sub" id="runline"></span>
+    <span class="ro">read-only evidence — no action can be taken from this page</span>
+  </div>
+  <nav id="tabs" role="tablist"></nav>
+</header>
+<main id="main"><div class="panel"><div class="empty">Loading evidence…</div></div></main>
+
+<script>
+"use strict";
+
+// Icons follow server.py's activity strip so the two surfaces read as one product.
+var ICONS = {
+  model_turn: ">", tool_call: "*", tool_refused: "x", approval_requested: "?",
+  approval_resolved: "!", approval_auto_denied: "!", payload_mismatch: "!",
+  provider_transport_failure: "x", provider_switched: "~", round_limit_reached: "-",
+  content_block_dropped: "-"
+};
+
+var DOC = null;
+var state = { run: 0, tab: "all", sel: null };
+
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  // textContent, never innerHTML: every string below this line comes from the
+  // bundle. The ONLY markup this page trusts is artifact_html, which the typed
+  // renderers in artifacts.py produced with every value escaped.
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+}
+
+function run() { return (DOC.runs || [])[state.run] || { events: [], approvals: [], checks: [] }; }
+
+function approvalsById() {
+  var map = {};
+  (run().approvals || []).forEach(function (a) { map[a.approval_id] = a; });
+  return map;
+}
+
+/* ---- the thread ------------------------------------------------------- */
+
+// One thread item per thing that happened. approval_resolved and
+// approval_auto_denied do not get their own rows: they are folded into the
+// approval card, because "asked" and "answered" are one moment to a reader.
+function threadItems() {
+  var byId = approvalsById();
+  var items = [];
+  (run().events || []).forEach(function (e, i) {
+    if (e.event === "approval_resolved" || e.event === "approval_auto_denied") return;
+    if (e.event === "approval_requested") {
+      items.push({ kind: "approval", key: "a" + i, event: e,
+                   approval: byId[e.approval_id] || null,
+                   integration: e.integration });
+    } else {
+      items.push({ kind: "event", key: "e" + i, event: e, integration: e.integration });
+    }
+  });
+  if (state.tab !== "all") {
+    items = items.filter(function (it) { return it.integration === state.tab; });
+  }
+  return items;
+}
+
+function labelFor(e) {
+  if (e.event === "model_turn") return "thinking (" + (e.model || "?") + ")";
+  if (e.event === "tool_call") return e.tool || "tool";
+  if (e.event === "tool_refused") return e.tool || "tool";
+  if (e.event === "provider_switched") return "switched to " + (e.model || "?");
+  return e.event;
+}
+
+function detailFor(e) {
+  if (e.event === "model_turn") return "round " + (e.round == null ? "?" : e.round);
+  if (e.event === "tool_call") {
+    if (e.ok) return (e.mutating ? "sent · " : "") + (e.result_chars || 0) + " chars";
+    return "failed" + (e.error_type ? ": " + e.error_type : "");
+  }
+  if (e.event === "tool_refused") return e.reason || "refused";
+  if (e.event === "payload_mismatch") return "aborted";
+  if (e.event === "provider_transport_failure") return e.error_type || "transport";
+  if (e.event === "round_limit_reached") return "max " + e.max_rounds;
+  return e.tool || "";
+}
+
+function decisionBadge(a) {
+  if (!a) return { cls: "pending", text: "no decision recorded" };
+  if (a.decision === "approved") return { cls: "approved", text: "approved by you" };
+  if (a.decision === "denied" && a.decided_by === "machine") {
+    return { cls: "machine", text: "auto-denied by the machine" };
+  }
+  if (a.decision === "denied") return { cls: "human", text: "denied by you" };
+  return { cls: "pending", text: "still pending" };
+}
+
+function renderApproval(item) {
+  var a = item.approval, e = item.event;
+  var card = el("div", "approval");
+  card.setAttribute("role", "button");
+  card.tabIndex = 0;
+  var top = el("div", "top");
+  top.appendChild(el("span", "tool", e.tool));
+  top.appendChild(el("span", "sub", "the gate stopped the run"));
+  var b = decisionBadge(a);
+  top.appendChild(el("span", "badge " + b.cls, b.text));
+  card.appendChild(top);
+
+  if (a && a.decided_by === "machine") {
+    card.appendChild(el("div", "why machine",
+      "No human answered this. The approval surface went away (" +
+      (a.machine_reason || "approver_stopped") + "), so the gate refused — an " +
+      "unanswerable request must never become an approval. This is not evidence " +
+      "that an operator reviewed and rejected it."));
+  } else if (a && a.decision === "denied") {
+    card.appendChild(el("div", "why", "A human reviewed this artifact and said no."));
+  } else if (a && a.decision === "approved") {
+    card.appendChild(el("div", "why",
+      a.executed ? "A human approved it, and the call then executed against a " +
+                   "re-derived payload hash."
+                 : "A human approved it. No matching execution is recorded."));
+  }
+
+  var meta = el("div", "meta");
+  meta.appendChild(el("span", "payload " + (a ? a.payload_hash : "?") + "…"));
+  if (a && a.rendered_chars != null) {
+    meta.appendChild(el("span", a.rendered_chars + " chars shown to the approver"));
+  }
+  meta.appendChild(el("span", e.approval_id));
+  card.appendChild(meta);
+  return card;
+}
+
+function renderEventRow(item) {
+  var e = item.event;
+  var cls = "item";
+  if (e.event === "tool_refused" || e.event === "payload_mismatch" ||
+      e.event === "provider_transport_failure") cls += " err";
+  if (e.event === "tool_call" && e.ok === false) cls += " err";
+  var row = el("button", cls);
+  row.type = "button";
+  row.appendChild(el("span", "ico", ICONS[e.event] || "-"));
+  row.appendChild(el("span", "lbl", labelFor(e)));
+  row.appendChild(el("span", "det", detailFor(e)));
+  return row;
+}
+
+function renderThread() {
+  var panel = el("div", "panel");
+  panel.appendChild(el("h2", null, state.tab === "all" ? "Run timeline"
+                                                       : state.tab + " activity"));
+  var items = threadItems();
+  if (!items.length) {
+    panel.appendChild(el("div", "empty", "Nothing in this run touched that integration."));
+    return panel;
+  }
+  items.forEach(function (item) {
+    var node = item.kind === "approval" ? renderApproval(item) : renderEventRow(item);
+    node.setAttribute("aria-current", state.sel === item.key ? "true" : "false");
+    node.addEventListener("click", function () { state.sel = item.key; draw(); });
+    panel.appendChild(node);
+  });
+  return panel;
+}
+
+/* ---- the canvas ------------------------------------------------------- */
+
+function selectedItem() {
+  var items = threadItems();
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].key === state.sel) return items[i];
+  }
+  // Default to the most recent thing that HAS an artifact, so the canvas opens
+  // on the substance of the run rather than on whichever event happened last.
+  for (var j = items.length - 1; j >= 0; j--) {
+    if (items[j].event.artifact_html) return items[j];
+  }
+  return items[items.length - 1] || null;
+}
+
+function renderCanvas() {
+  var panel = el("div", "panel");
+  panel.appendChild(el("h2", null, "Artifact"));
+  var item = selectedItem();
+  if (!item) {
+    panel.appendChild(el("div", "empty", "Select something in the timeline."));
+    return panel;
+  }
+  var e = item.event;
+  var head = el("div", "meta");
+  head.appendChild(el("span", e.tool || e.event));
+  if (e.ts) head.appendChild(el("span", e.ts));
+  panel.appendChild(head);
+
+  if (e.artifact_html) {
+    var host = el("div", "scroll");
+    // The one trusted-markup path on this page, and the reason artifacts.py
+    // exists: this HTML was produced by a typed renderer keyed on the tool name,
+    // from arguments the exporter chose — never from anything a model wrote.
+    host.innerHTML = e.artifact_html;
+    panel.appendChild(host);
+  } else {
+    panel.appendChild(el("div", "empty",
+      "This step has no artifact — it is a state change in the run, not a call."));
+  }
+
+  if (item.kind === "approval" && item.approval) {
+    var b = decisionBadge(item.approval);
+    var foot = el("div", "top");
+    foot.appendChild(el("span", "sub", "decision"));
+    foot.appendChild(el("span", "badge " + b.cls, b.text));
+    panel.appendChild(foot);
+  }
+  return panel;
+}
+
+/* ---- verdict ---------------------------------------------------------- */
+
+function renderVerdict() {
+  var out = document.createDocumentFragment();
+  var v = DOC.verdict;
+  var head = DOC.headline || {};
+
+  var claimPanel = el("div", "panel");
+  claimPanel.appendChild(el("h2", null, "Headline claim"));
+  var claim = el("div", "claim " + (head.status || "unavailable"));
+  claim.appendChild(el("div", "lead", head.status || "unavailable"));
+  claim.appendChild(el("p", null, head.claim || "No claim."));
+  var ol = el("ol");
+  (head.qualifiers || []).forEach(function (q) { ol.appendChild(el("li", null, q)); });
+  // The qualifiers are rendered unconditionally and never behind a toggle: the
+  // unqualified version of this claim was a finding against this project.
+  claim.appendChild(ol);
+  claimPanel.appendChild(claim);
+  out.appendChild(claimPanel);
+
+  var checksPanel = el("div", "panel");
+  checksPanel.appendChild(el("h2", null, "Checks"));
+  var checks = (v && v.checks) || [];
+  if (!checks.length) {
+    checksPanel.appendChild(el("div", "empty",
+      "No verdict was produced for this bundle. That is not a pass."));
+  }
+  checks.forEach(function (c) {
+    var verdict = c.verdict === "pass" || c.verdict === "fail" ? c.verdict : "inconclusive";
+    var box = el("div", "check " + verdict);
+    var line = el("div");
+    line.appendChild(el("span", "cid", c.id));
+    line.appendChild(el("span", "cv", verdict));
+    box.appendChild(line);
+    box.appendChild(el("div", "ev", c.evidence));
+    checksPanel.appendChild(box);
+  });
+  var li = (v && v.log_integrity) || DOC.log_integrity || {};
+  checksPanel.appendChild(el("h2", null, "Log integrity"));
+  checksPanel.appendChild(el("div", "integrity" + (li.sound ? "" : " unsound"),
+    (li.sound ? "sound — " : "UNSOUND — ") + (li.evidence || "not measured")));
+  out.appendChild(checksPanel);
+
+  var about = el("div", "panel");
+  about.appendChild(el("h2", null, "What is not in this file"));
+  about.appendChild(el("div", "ev", (DOC.redaction || {}).note || ""));
+  out.appendChild(about);
+  return out;
+}
+
+/* ---- chrome ----------------------------------------------------------- */
+
+function renderTabs() {
+  var nav = document.getElementById("tabs");
+  nav.textContent = "";
+  var tabs = [{ key: "all", label: "Run" }];
+  // Derived from the tool names present in the data — a fourth integration shows
+  // up here the day it shows up in a run.
+  (DOC.integrations || []).forEach(function (t) {
+    tabs.push({ key: t.key, label: t.label, count: t.events });
+  });
+  tabs.push({ key: "verdict", label: "Verdict" });
+  tabs.forEach(function (t) {
+    var b = el("button", null, t.label);
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", state.tab === t.key ? "true" : "false");
+    if (t.count != null) b.appendChild(el("span", "count", t.count));
+    b.addEventListener("click", function () { state.tab = t.key; state.sel = null; draw(); });
+    nav.appendChild(b);
+  });
+}
+
+function renderRunLine() {
+  var line = document.getElementById("runline");
+  line.textContent = "";
+  var v = DOC.verdict || {};
+  var r = run();
+  line.appendChild(el("span", null, "run " + (r.run_id || "?")));
+  line.appendChild(el("span", null, " · " + (v.model || "unknown model")));
+  line.appendChild(el("span", null, " · commit " + String(DOC.commit || "?").slice(0, 8)));
+  line.appendChild(el("span", null, " · exported " + (DOC.generated_at || "?")));
+  if ((DOC.runs || []).length > 1) {
+    var sel = el("select");
+    DOC.runs.forEach(function (rr, i) {
+      var o = el("option", null, "run " + rr.run_id + " (" + rr.events.length + " events)");
+      o.value = String(i);
+      sel.appendChild(o);
+    });
+    sel.value = String(state.run);
+    sel.addEventListener("change", function () {
+      state.run = Number(sel.value); state.sel = null; draw();
+    });
+    line.appendChild(document.createTextNode(" "));
+    line.appendChild(sel);
+  }
+}
+
+function draw() {
+  renderTabs();
+  renderRunLine();
+  var main = document.getElementById("main");
+  main.textContent = "";
+  if (state.tab === "verdict") {
+    var wrap = el("div", "thread");
+    wrap.style.flex = "1 1 100%";
+    wrap.appendChild(renderVerdict());
+    main.appendChild(wrap);
+    return;
+  }
+  var left = el("div", "thread");
+  left.appendChild(renderThread());
+  var right = el("div", "canvas");
+  right.appendChild(renderCanvas());
+  main.appendChild(left);
+  main.appendChild(right);
+}
+
+function fail(message, hint) {
+  var main = document.getElementById("main");
+  main.textContent = "";
+  var panel = el("div", "panel");
+  var box = el("div", "empty", message);
+  if (hint) {
+    box.appendChild(document.createElement("br"));
+    box.appendChild(el("code", null, hint));
+  }
+  panel.appendChild(box);
+  main.appendChild(panel);
+}
+
+fetch("evidence.json", { cache: "no-store" })
+  .then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  })
+  .then(function (doc) {
+    DOC = doc;
+    if (doc.artifact_css) {
+      // The artifact stylesheet travels in the bundle rather than being copied
+      // here, so the cards on this page cannot drift from the ones the approver
+      // saw in the local approval surface.
+      var s = document.createElement("style");
+      s.textContent = doc.artifact_css;
+      document.head.appendChild(s);
+    }
+    if (!(doc.runs || []).length) {
+      fail("This bundle contains no runs.", "python -m ctrl_a_jr.export --out web/evidence.json");
+      return;
+    }
+    draw();
+  })
+  .catch(function (err) {
+    fail("No evidence.json alongside this page (" + err.message + "). Generate one, " +
+         "then serve this directory over HTTP — a file:// page cannot fetch it.",
+         "python -m ctrl_a_jr.export --out web/evidence.json");
+  });
+</script>
+</body>
+</html>

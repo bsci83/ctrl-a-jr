@@ -1,0 +1,5 @@
+# A bundle describes a REAL run: real invoice ids, real timings, a real customer's
+# approval trail. It is redacted, not anonymous. Generate it at deploy time —
+#   python -m ctrl_a_jr.export --out web/evidence.json
+# — and never commit one.
+evidence.json

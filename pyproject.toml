@@ -23,6 +23,10 @@ packages = ["src/ctrl_a_jr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `ctrl_a_jr` is installed editable against ONE checkout. Without this, a test run
+# started inside a git worktree imports the MAIN checkout's source and reports a
+# green suite over code the branch does not contain.
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
