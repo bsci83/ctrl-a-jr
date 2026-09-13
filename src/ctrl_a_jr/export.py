@@ -235,6 +235,86 @@ def _approvals(events: list[dict]) -> list[dict]:
     return out
 
 
+def assign_turns(events: list[dict]) -> int:
+    """Number each event with the model turn it belongs to, in place.
+
+    The page reads the run as a conversation, and a conversation needs to know
+    which calls belong to which turn. `round` is only on `model_turn`, so the
+    grouping has to be walked. Everything before the first `model_turn` is turn
+    0 — the setup the run did before the model spoke.
+
+    This adds a derived integer, not a log field. It cannot carry anything from
+    the record, which is why it does not need an allowlist entry: there is no
+    input value to leak.
+    """
+    turn = 0
+    for event in events:
+        if event.get("event") == "model_turn":
+            turn += 1
+        event["turn"] = turn
+    return turn
+
+
+def _outcome(events: list[dict], approvals: list[dict]) -> dict:
+    """What the run actually did, counted.
+
+    Every value here is a count or a key that was already exported, so the
+    summary cannot say more than the allowlist already published. It exists so
+    the page can state an outcome without inventing one: a surface that
+    describes "what happened" from prose would be describing the scenario, and
+    the scenario changes.
+    """
+    per_integration: dict[str, dict] = {}
+    counts = {
+        "turns": 0, "tool_calls": 0, "reads": 0,
+        "mutations_executed": 0, "mutations_failed": 0,
+        "refusals": 0, "payload_mismatches": 0, "transport_failures": 0,
+    }
+    for e in events:
+        event = e.get("event")
+        counts["turns"] = max(counts["turns"], int(e.get("turn") or 0))
+        key = e.get("integration")
+        if key:
+            row = per_integration.setdefault(str(key), {
+                "key": str(key),
+                "label": e.get("integration_label", key),
+                "events": 0,
+                "approvals": 0,
+            })
+            row["events"] += 1
+            if event == "approval_requested":
+                row["approvals"] += 1
+        if event == "tool_call":
+            counts["tool_calls"] += 1
+            if not e.get("mutating"):
+                counts["reads"] += 1
+            elif e.get("ok"):
+                counts["mutations_executed"] += 1
+            else:
+                counts["mutations_failed"] += 1
+        elif event == "tool_refused":
+            counts["refusals"] += 1
+        elif event == "payload_mismatch":
+            counts["payload_mismatches"] += 1
+        elif event == "provider_transport_failure":
+            counts["transport_failures"] += 1
+
+    gate = {"requested": len(approvals), "approved": 0,
+            "denied_by_human": 0, "denied_by_machine": 0, "undecided": 0}
+    for a in approvals:
+        if a.get("decision") == "approved":
+            gate["approved"] += 1
+        elif a.get("decision") == "denied":
+            # A human saying no and the surface disappearing are the same
+            # Decision and different evidence; they stay apart in the counts too.
+            key = "denied_by_machine" if a.get("decided_by") == "machine" else "denied_by_human"
+            gate[key] += 1
+        else:
+            gate["undecided"] += 1
+
+    return {**counts, "gate": gate, "integrations": list(per_integration.values())}
+
+
 def integrations_in(runs: list[dict]) -> list[dict]:
     """The tab list, derived from the data rather than declared.
 
@@ -418,12 +498,15 @@ def build_bundle(records: list[dict], integrity: LogIntegrity | None = None,
     runs = []
     for run_id, rows in group_by_run(records):
         events = [export_event(r) for r in rows]
+        assign_turns(events)
+        approvals = _approvals(rows)
         runs.append({
             "run_id": run_id,
             "started_at": rows[0].get("ts") if rows else None,
             "ended_at": rows[-1].get("ts") if rows else None,
             "events": events,
-            "approvals": _approvals(rows),
+            "approvals": approvals,
+            "outcome": _outcome(events, approvals),
             "checks": [
                 {
                     "id": str(c.get("id", "?")),
@@ -447,6 +530,11 @@ def build_bundle(records: list[dict], integrity: LogIntegrity | None = None,
                      "Message bodies, recipients and credentials are absent because a "
                      "denylist fails open and this file is public."),
             "exported_fields": {k: list(v) for k, v in sorted(EVENT_FIELDS.items())},
+            # Named so the published file describes itself. These are computed
+            # from fields already above, never read off a record, so none of
+            # them is a new door into the log.
+            "derived_fields": ["turn", "integration", "integration_label",
+                               "error_type", "artifact_html", "outcome"],
         },
         "log_integrity": (exported_verdict or {}).get("log_integrity") or {
             "sound": integrity.sound if integrity else False,

@@ -8,11 +8,29 @@ credential, a customer address or an unreviewed field reach the file", and
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+import ctrl_a_jr
 from ctrl_a_jr import export
 from ctrl_a_jr.activity import LogIntegrity
+
+
+def test_the_suite_is_testing_this_checkout():
+    """`ctrl_a_jr` is installed editable against ONE checkout.
+
+    A pytest run started inside a git worktree can therefore import the MAIN
+    checkout's source and report a green suite over code this branch does not
+    contain. `pythonpath = ["src"]` in pyproject.toml is the fix; this asserts
+    the fix is actually in force, because the failure mode of an additive
+    change is a pass over code that never executed.
+    """
+    imported = Path(ctrl_a_jr.__file__).resolve()
+    here = Path(__file__).resolve().parents[1]
+    assert here in imported.parents, (
+        f"imported ctrl_a_jr from {imported}, which is outside {here}"
+    )
 
 SENTINELS = {
     "STRIPE_SECRET_KEY": "sk_test_SENTINEL0000000000",
@@ -82,6 +100,93 @@ def test_no_sentinel_secret_reaches_the_bundle(monkeypatch):
     assert "Hi Dana" not in serialised
     assert "Your invoice" not in serialised
 
+    # The derived fields the page reads (turn grouping, the per-run outcome
+    # counts) are covered by the same sentinel planting: they are computed, so
+    # they must not open a second door into the record. Asserted structurally
+    # as well as by absence, because absence alone would pass if a future field
+    # carried a value no sentinel happens to match.
+    for run in bundle["runs"]:
+        for event in run["events"]:
+            assert isinstance(event["turn"], int)
+            allowed = set(export.COMMON_FIELDS) | {
+                "turn", "integration", "integration_label", "error_type",
+                "artifact_html", "unknown_event",
+            } | set(export.EVENT_FIELDS.get(event["event"], ()))
+            assert set(event) <= allowed, f"unreviewed field on {event['event']}"
+        assert _only_counts(run["outcome"])
+
+
+def _only_counts(node) -> bool:
+    """Every leaf of the outcome block is a count or an already-exported key."""
+    if isinstance(node, bool) or isinstance(node, int):
+        return True
+    if isinstance(node, str):
+        # The only strings are integration keys and their display labels, both
+        # of which are already published in `integrations`.
+        return True
+    if isinstance(node, list):
+        return all(_only_counts(v) for v in node)
+    if isinstance(node, dict):
+        return all(_only_counts(v) for v in node.values())
+    return False
+
+
+def test_turns_group_calls_under_the_model_turn_that_made_them():
+    """The conversation view needs to know which calls belong to which turn.
+
+    `round` only exists on `model_turn`, so the grouping is walked. Anything
+    before the first model turn is turn 0 rather than turn 1 — attributing setup
+    to a turn the model had not taken yet would misdescribe the run.
+    """
+    records = [
+        _event("tool_call", tool="stripe_get_invoice", ok=True, mutating=False,
+               result_chars=10),
+        _event("model_turn", provider="minimax", model="M", round=1),
+        _event("tool_call", tool="gmail_send", ok=True, mutating=True,
+               approval_id="ap_1", result_chars=2),
+        _event("model_turn", provider="minimax", model="M", round=2),
+        _event("tool_call", tool="slack_post_message", ok=True, mutating=True,
+               approval_id="ap_2", result_chars=2),
+    ]
+    bundle = export.build_bundle(records, _integrity(5), None, commit="c")
+    assert [e["turn"] for e in bundle["runs"][0]["events"]] == [0, 1, 1, 2, 2]
+    assert bundle["runs"][0]["outcome"]["turns"] == 2
+
+
+def test_outcome_counts_separate_machine_denial_from_human_denial():
+    """Same Decision, different evidence — the summary must not merge them."""
+    records = [
+        _event("approval_requested", approval_id="ap_h", tool="gmail_send",
+               payload_hash="a" * 64, rendered_chars=10),
+        _event("approval_resolved", approval_id="ap_h", tool="gmail_send",
+               decision="denied"),
+        _event("approval_requested", approval_id="ap_m", tool="slack_post_message",
+               payload_hash="b" * 64, rendered_chars=10),
+        _event("approval_auto_denied", approval_id="ap_m", tool="slack_post_message",
+               reason="approver_stopped"),
+        _event("approval_requested", approval_id="ap_p", tool="stripe_send_invoice",
+               payload_hash="c" * 64, rendered_chars=10),
+        _event("tool_call", tool="gmail_send", ok=False, mutating=True,
+               approval_id="ap_h", error="SMTPException()"),
+        _event("tool_refused", tool="slack_post_message", reason="approval_failed"),
+    ]
+    bundle = export.build_bundle(records, _integrity(7), None, commit="c")
+    gate = bundle["runs"][0]["outcome"]["gate"]
+    assert gate == {"requested": 3, "approved": 0, "denied_by_human": 1,
+                    "denied_by_machine": 1, "undecided": 1}
+    counts = bundle["runs"][0]["outcome"]
+    assert counts["mutations_executed"] == 0
+    assert counts["mutations_failed"] == 1
+    assert counts["refusals"] == 1
+
+
+def test_outcome_integrations_follow_the_data():
+    bundle = export.build_bundle(_approved_run(), _integrity(5), None, commit="c")
+    rows = {t["key"]: t for t in bundle["runs"][0]["outcome"]["integrations"]}
+    assert set(rows) == {"stripe", "gmail"}
+    assert rows["gmail"]["approvals"] == 1
+    assert rows["stripe"]["approvals"] == 0
+
 
 def test_unexpected_new_field_does_not_leak():
     """Redaction is allowlist-based: a field nobody has reviewed is simply absent.
@@ -104,7 +209,11 @@ def test_unknown_event_type_exports_only_common_fields():
     bundle = export.build_bundle(records, _integrity(1), None, commit="c")
     exported = bundle["runs"][0]["events"][0]
     assert exported["unknown_event"] is True
-    assert set(exported) <= {"event", "run_id", "ts", "agent", "unknown_event"}
+    # `turn` is the one addition, and it is derived from the event's POSITION in
+    # the run, not from anything in the record — so nothing the unknown event
+    # carried can ride out on it. Everything else is still dropped.
+    assert set(exported) <= {"event", "run_id", "ts", "agent", "unknown_event", "turn"}
+    assert isinstance(exported["turn"], int)
     assert "please stop" not in json.dumps(bundle)
 
 
@@ -136,8 +245,50 @@ def test_inconclusive_check_does_not_export_as_a_pass():
     verdicts = [c["verdict"] for c in bundle["verdict"]["checks"]]
     assert verdicts == ["inconclusive", "inconclusive"]
     assert bundle["runs"][0]["checks"][0]["verdict"] == "inconclusive"
+    assert bundle["verdict"]["per_run"][0]["checks"][0]["verdict"] == "inconclusive"
     assert bundle["headline"]["status"] == "inconclusive"
     assert "0 unapproved" not in bundle["headline"]["claim"]
+
+
+@pytest.mark.parametrize("word", ["inconclusive", "green", "PASS", "pass ", "ok",
+                                  "passed", "", None, True, 1])
+def test_only_the_exact_word_pass_survives_as_a_pass(word):
+    """Everything that is not exactly "pass" or "fail" leaves as inconclusive.
+
+    Case, whitespace, a truthy non-string and a plausible synonym are each a way
+    a check could have arrived on the page coloured green without ever having
+    passed. None of them do. The page applies the same rule independently, so an
+    unknown verdict word has to get past both to be rendered as a pass.
+    """
+    verdict = {
+        "checks": [{"id": "gate_integrity", "verdict": word, "evidence": "x",
+                    "severity": "critical"},
+                   {"id": "payload_integrity", "verdict": "pass", "evidence": "y",
+                    "severity": "critical"}],
+        "per_run": [{"run_id": "run1", "checks": [
+            {"id": "gate_integrity", "verdict": word, "evidence": "x"}]}],
+        "runs": 1, "model": "m", "log_integrity": {"sound": True},
+    }
+    bundle = export.build_bundle(_approved_run(), _integrity(5), verdict, commit="c")
+    gate = bundle["verdict"]["checks"][0]
+    assert gate["verdict"] == "inconclusive"
+    assert bundle["verdict"]["per_run"][0]["checks"][0]["verdict"] == "inconclusive"
+    assert bundle["runs"][0]["checks"][0]["verdict"] == "inconclusive"
+    # And a headline cannot be claimed off a check that never passed.
+    assert bundle["headline"]["status"] == "inconclusive"
+    assert "0 unapproved" not in bundle["headline"]["claim"]
+
+
+def test_a_check_with_no_verdict_key_at_all_is_inconclusive():
+    """Absent evidence renders as absent, never as a pass."""
+    verdict = {
+        "checks": [{"id": "gate_integrity", "evidence": "never ran"},
+                   {"id": "payload_integrity", "verdict": "pass", "evidence": "y"}],
+        "runs": 1, "model": "m", "log_integrity": {"sound": True},
+    }
+    bundle = export.build_bundle(_approved_run(), _integrity(5), verdict, commit="c")
+    assert bundle["verdict"]["checks"][0]["verdict"] == "inconclusive"
+    assert bundle["headline"]["status"] == "inconclusive"
 
 
 def test_missing_verdict_is_not_a_pass():
