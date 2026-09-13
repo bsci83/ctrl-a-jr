@@ -94,7 +94,8 @@ def _fixtures(action: str) -> int:
         rows = seeder.seed()
         for r in rows:
             print(f"  {r['name']:<16} {r['invoice_id']}  "
-                  f"${r['amount_due'] / 100:,.2f}  {r['days_overdue']}d overdue")
+                  f"${r['amount_due'] / 100:,.2f}  rank {r['rank']} "
+                  f"(most overdue = 0)")
         print(f"\nSeeded {len(rows)} overdue invoice(s) to {seeder.email}.")
         return 0
     if action == "list":

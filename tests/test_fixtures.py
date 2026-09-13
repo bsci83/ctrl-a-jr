@@ -5,7 +5,6 @@ and is never read proves nothing. Every test here asserts what actually goes on
 the wire — method, path, and body — not merely that a call returned.
 """
 
-import time
 
 import pytest
 
@@ -57,6 +56,9 @@ def test_a_missing_or_malformed_email_is_refused():
 
 # ── seeding: assert the wire, not the return value ───────────────────────────
 
+BASE = 1_900_000_000
+
+
 def _seed_responses():
     return {
         "customers": {"id": "cus_1"},
@@ -67,9 +69,13 @@ def _seed_responses():
     }
 
 
+def _seed_one(s, name="Ada Lovelace", amount=4200, rank=0):
+    return s.seed_one(BASE, name, amount, rank)
+
+
 def test_seed_one_creates_customer_item_invoice_and_finalizes_in_order():
     s = _seeder(_seed_responses())
-    s.seed_one("Ada Lovelace", 4200, 31)
+    _seed_one(s)
     assert [r["path"] for r in s.http.requests] == [
         "customers", "invoiceitems", "invoices", "invoices/in_1/finalize",
     ]
@@ -80,34 +86,77 @@ def test_every_created_object_carries_the_fixture_tag():
     """Teardown deletes by tag. An untagged object could never be cleaned up —
     and worse, an untagged object is indistinguishable from real data."""
     s = _seeder(_seed_responses())
-    s.seed_one("Ada Lovelace", 4200, 31)
+    _seed_one(s)
     by_path = {r["path"]: r["data"] for r in s.http.requests}
     tag_key = f"metadata[{fixtures.FIXTURE_TAG}]"
     assert by_path["customers"][tag_key] == "true"
     assert by_path["invoices"][tag_key] == "true"
 
 
-def test_the_invoice_due_date_is_actually_in_the_past():
-    """An invoice that is merely open is not the state this agent acts on."""
+def test_the_due_date_is_in_the_future_at_creation():
+    """Stripe rejects a due_date that is not strictly future, on create AND on
+    update. The fixture becomes overdue by lapsing, not by backdating."""
     s = _seeder(_seed_responses())
-    s.seed_one("Ada Lovelace", 4200, 31)
-    invoice_body = next(r["data"] for r in s.http.requests if r["path"] == "invoices")
-    due = int(invoice_body["due_date"])
-    assert due < int(time.time())
-    # 31 days back, within a minute of tolerance for test runtime
-    assert abs((int(time.time()) - due) - 31 * 86400) < 60
+    _seed_one(s, rank=0)
+    body = next(r["data"] for r in s.http.requests if r["path"] == "invoices")
+    assert int(body["due_date"]) == BASE
+
+
+def test_rank_orders_the_due_dates_so_rank_zero_is_most_overdue():
+    due = [_seed_one(_seeder(_seed_responses()), rank=r)["due_date"] for r in (0, 1, 2)]
+    assert due == sorted(due), "rank 0 must fall due first"
+    assert due[1] - due[0] == fixtures.STAGGER_SECONDS
+
+
+def test_no_test_clock_is_used():
+    """Objects on a test clock are excluded from Stripe's list endpoints, so
+    stripe_list_failed_payments returned 0 and the agent could not find the
+    invoices it existed to recover. Verified against live Stripe, 2026-09-13."""
+    s = _seeder(_seed_responses())
+    s.seed(wait=False)
+    assert not any("test_clock" in r["path"] for r in s.http.requests)
+    assert all("test_clock" not in (r["data"] or {}) for r in s.http.requests)
+
+
+def test_the_most_overdue_fixture_also_crosses_the_slack_threshold():
+    """The prompt says post to Slack above $500 and the agent works the MOST
+    overdue invoice. These used to disagree — most overdue was $42 — so the
+    agent's natural path never touched Slack and the submission was silently a
+    two-app demo. Nothing else in the suite can catch that."""
+    most_overdue = min(fixtures.DEFAULT_FIXTURES, key=lambda f: f["rank"])
+    assert most_overdue["amount_due"] > 50000
+
+
+def test_seed_waits_for_every_due_date_to_lapse(monkeypatch):
+    """Returning early hands back invoices that are merely open — the one state
+    this agent does not exist to act on."""
+    waited = {}
+    s = _seeder(_seed_responses())
+    monkeypatch.setattr(s, "_wait_until", lambda ts: waited.setdefault("until", ts))
+    rows = s.seed()
+    assert waited["until"] > max(r["due_date"] for r in rows)
+
+
+def test_pending_invoice_items_are_explicitly_included():
+    """Stripe's default is `exclude`. Without this the item never attaches, the
+    invoice totals 0, and a $0 invoice auto-pays on finalize — a fixture that
+    looks seeded and gives the agent nothing to recover."""
+    s = _seeder(_seed_responses())
+    _seed_one(s)
+    body = next(r["data"] for r in s.http.requests if r["path"] == "invoices")
+    assert body["pending_invoice_items_behavior"] == "include"
 
 
 def test_the_invoice_uses_send_invoice_collection():
     s = _seeder(_seed_responses())
-    s.seed_one("Ada Lovelace", 4200, 31)
+    _seed_one(s)
     invoice_body = next(r["data"] for r in s.http.requests if r["path"] == "invoices")
     assert invoice_body["collection_method"] == "send_invoice"
 
 
 def test_the_amount_and_customer_reach_the_invoice_item():
     s = _seeder(_seed_responses())
-    s.seed_one("Ada Lovelace", 4200, 31)
+    _seed_one(s)
     item = next(r["data"] for r in s.http.requests if r["path"] == "invoiceitems")
     assert item["amount"] == 4200
     assert item["customer"] == "cus_1"
@@ -116,23 +165,23 @@ def test_the_amount_and_customer_reach_the_invoice_item():
 
 def test_seed_one_returns_the_ids_a_run_needs():
     s = _seeder(_seed_responses())
-    out = s.seed_one("Ada Lovelace", 4200, 31)
+    out = _seed_one(s)
     assert out["customer_id"] == "cus_1"
     assert out["invoice_id"] == "in_1"
     assert out["hosted_invoice_url"] == "https://pay.stripe.com/x"
 
 
-def test_seed_defaults_to_three_fixtures_with_differing_overdue_ages():
+def test_seed_defaults_to_three_fixtures_with_distinct_ranks():
     s = _seeder(_seed_responses())
-    out = s.seed()
+    out = s.seed(wait=False)
     assert len(out) == 3
-    ages = [f["days_overdue"] for f in fixtures.DEFAULT_FIXTURES]
-    assert len(set(ages)) == 3, "the agent must have a most-overdue one to pick"
+    ranks = [f["rank"] for f in fixtures.DEFAULT_FIXTURES]
+    assert len(set(ranks)) == 3, "the agent must have a most-overdue one to pick"
 
 
 def test_the_bearer_token_is_sent_as_a_header_and_never_in_a_body():
     s = _seeder(_seed_responses())
-    s.seed_one("Ada Lovelace", 4200, 31)
+    _seed_one(s)
     for r in s.http.requests:
         assert r["headers"]["Authorization"] == "Bearer sk_test_x"
         assert "sk_test_x" not in str(r["data"])

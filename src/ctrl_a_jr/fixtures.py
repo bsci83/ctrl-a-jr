@@ -25,12 +25,32 @@ import httpx
 API = "https://api.stripe.com/v1"
 FIXTURE_TAG = "ctrl_a_jr_fixture"
 
+# Stripe rejects a `due_date` that is not strictly in the future, on create AND
+# on update — an invoice cannot be backdated. A test clock is the documented way
+# around that, and it is a trap here: objects on a test clock are excluded from
+# list endpoints, so `stripe_list_failed_payments` returned 0 and the agent could
+# not find the very invoices it was meant to recover. Verified by calling the
+# agent's own tool, 2026-09-13.
+#
+# So: set due dates a short way into the future, then wait for them to lapse.
+# The invoices are ordinary, visible, genuinely past due, and correctly ordered.
+# The cost is that "overdue" is minutes rather than days.
+LEAD_SECONDS = 90      # until the MOST overdue invoice falls due
+STAGGER_SECONDS = 30   # gap between consecutive ranks
+
 # Three customers is enough to exercise "pick the most overdue" without making a
 # run tedious to approve by hand.
+#
+# `rank` is position in the overdue ordering: 0 is the MOST overdue. Amounts are
+# deliberately ordered so the most overdue invoice is also the one that crosses
+# the $500 Slack threshold in the system prompt. They used to run the other way
+# — most overdue was $42 — so the agent's natural path never touched Slack and
+# the demo was silently a two-app demo. The fixtures and the prompt have to be
+# read together; neither is wrong alone.
 DEFAULT_FIXTURES = [
-    {"name": "Ada Lovelace", "amount_due": 4200, "days_overdue": 31},
-    {"name": "Grace Hopper", "amount_due": 18500, "days_overdue": 12},
-    {"name": "Alan Turing", "amount_due": 79900, "days_overdue": 3},
+    {"name": "Ada Lovelace", "amount_due": 79900, "rank": 0},
+    {"name": "Grace Hopper", "amount_due": 18500, "rank": 1},
+    {"name": "Alan Turing", "amount_due": 4200, "rank": 2},
 ]
 
 
@@ -83,8 +103,8 @@ class FixtureSeeder:
 
     # ── seeding ──────────────────────────────────────────────────────────────
 
-    def seed_one(self, name: str, amount_due: int, days_overdue: int) -> dict:
-        """One customer with one finalized, past-due invoice."""
+    def seed_one(self, base: int, name: str, amount_due: int, rank: int) -> dict:
+        """One customer with one finalized invoice, due `rank` steps after `base`."""
         customer = self._post("customers", {
             "name": name,
             "email": self.email,
@@ -96,28 +116,58 @@ class FixtureSeeder:
             "currency": "usd",
             "description": f"Overdue balance for {name}",
         })
-        # due_date is an absolute past timestamp — days_until_due cannot express
-        # "already overdue", and an invoice that is merely open is not the state
-        # this agent exists to act on.
-        due = int(time.time()) - days_overdue * 86400
+        due = base + rank * STAGGER_SECONDS
         invoice = self._post("invoices", {
             "customer": customer["id"],
             "collection_method": "send_invoice",
             "due_date": due,
+            # Stripe's default here is `exclude`. Without this the pending
+            # invoice item never attaches, the invoice totals 0, and a $0
+            # invoice auto-pays on finalize — which is how this first showed
+            # up: status 'paid' on an invoice that was supposed to be overdue.
+            "pending_invoice_items_behavior": "include",
             f"metadata[{FIXTURE_TAG}]": "true",
         })
         finalized = self._post(f"invoices/{invoice['id']}/finalize", {})
+        # A send_invoice invoice with no payment method must finalize to `open`.
+        # An earlier probe finalized straight to `paid`, which is not the state
+        # this agent exists to act on — fail loudly rather than seed a fixture
+        # that silently makes the demo a no-op.
+        if finalized.get("status") != "open":
+            raise RuntimeError(
+                f"invoice {finalized['id']} finalized as "
+                f"{finalized.get('status')!r}, expected 'open'"
+            )
         return {
             "customer_id": customer["id"],
             "name": name,
             "invoice_id": finalized["id"],
             "amount_due": amount_due,
-            "days_overdue": days_overdue,
+            "rank": rank,
+            "due_date": due,
             "hosted_invoice_url": finalized.get("hosted_invoice_url"),
         }
 
-    def seed(self, fixtures: list[dict] | None = None) -> list[dict]:
-        return [self.seed_one(**f) for f in (fixtures or DEFAULT_FIXTURES)]
+    def seed(self, fixtures: list[dict] | None = None,
+             wait: bool = True) -> list[dict]:
+        """Create the invoices, then wait for every due date to pass.
+
+        Returning before they lapse would hand back invoices that are merely
+        open — which is exactly the state this agent does NOT exist to act on.
+        """
+        specs = fixtures or DEFAULT_FIXTURES
+        base = int(time.time()) + LEAD_SECONDS
+        rows = [self.seed_one(base, **f) for f in specs]
+        if wait:
+            self._wait_until(max(r["due_date"] for r in rows) + 5)
+        return rows
+
+    def _wait_until(self, timestamp: int) -> None:
+        while True:
+            remaining = timestamp - time.time()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 5))
 
     # ── listing and teardown ─────────────────────────────────────────────────
 
