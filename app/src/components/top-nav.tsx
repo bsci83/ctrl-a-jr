@@ -7,7 +7,8 @@ import { Suspense } from "react";
 import { Badge, Mono, cn } from "./primitives";
 
 const LINKS = [
-  { href: "/", label: "Workspace" },
+  { href: "/", label: "Console" },
+  { href: "/evidence", label: "Workspace" },
   { href: "/channels", label: "Channels" },
   { href: "/verdict", label: "Verdict" },
 ];
@@ -54,6 +55,39 @@ function NavLinks() {
   );
 }
 
+/**
+ * What the surface you are on can actually do.
+ *
+ * The console runs real turns against the deployed agent; the other three
+ * replay a frozen export. Labelling them the same way would either overstate
+ * the replay or understate the console — and "read-only" on a page that can
+ * start a run is the kind of wrong that gets believed.
+ *
+ * Neither label promises an approval control: there is none anywhere in this
+ * app, on any page.
+ */
+function SurfaceBadge() {
+  const pathname = usePathname();
+  if (pathname === "/") {
+    return (
+      <Badge
+        tone="primary"
+        title="This page starts real runs against the deployed agent. It still cannot approve, deny or execute anything — decisions happen on the signed approval page."
+      >
+        live agent
+      </Badge>
+    );
+  }
+  return (
+    <Badge
+      tone="info"
+      title="Nothing on this page can approve, deny, send or change anything. It replays a recorded run."
+    >
+      replay · read-only
+    </Badge>
+  );
+}
+
 export function TopNav({
   commit,
   generatedAt,
@@ -89,9 +123,7 @@ export function TopNav({
         </Suspense>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Badge tone="info" title="Nothing on this page can approve, deny, send or change anything. The operable approval surface is the local approval server.">
-            read-only
-          </Badge>
+          <SurfaceBadge />
           {commit ? (
             <Mono className="text-[var(--on-surface-muted)]" >
               {commit.slice(0, 7)}
