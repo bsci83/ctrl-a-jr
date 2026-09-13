@@ -1,56 +1,100 @@
-"""Seed and tear down Stripe test-mode fixtures for eval runs.
+"""Seed and tear down the inbound-quote scenario: Stripe customers + real email.
 
 This is DEV TOOLING, not agent capability. Nothing here is registered as a tool:
-the agent can read invoices and ask Stripe to send them, but it must never be
-able to create a customer or mint an invoice. Keeping this out of the registry
-is what keeps the agent's surface at 11 hand-audited tools.
+the agent may look a customer up and invoice a quoted job, but it must never be
+able to create a customer or send mail *as* one.
 
-Two safety rules, both load-bearing:
+Three safety rules, all load-bearing:
 
 1. **Test mode only.** A key that is not `sk_test_*` is refused at construction,
    the same rule the agent's own StripeClient enforces.
-2. **Teardown only touches what this module made.** Every object is stamped with
-   `metadata[ctrl_a_jr_fixture]=true`, and teardown deletes nothing without it.
-   A teardown that could reach real customer data would be worse than no teardown.
+2. **Teardown only touches what this module made.** Every Stripe object is
+   stamped with `metadata[ctrl_a_jr_fixture]=true`, and teardown deletes nothing
+   without it. A teardown that could reach real customer data would be worse
+   than no teardown.
+3. **The mail is real.** The requests are delivered by SMTP to the shop inbox so
+   the agent has to find and parse an actual human message. Handing the details
+   to the agent would demo nothing: parsing the email IS the capability.
+
+Mail teardown is deliberately manual. The agent's IMAP path is readonly=True
+because it bypasses the approval gate, and a fixture module that deleted mail
+would need a write-capable path into the same mailbox. Every seeded message
+carries `X-Ctrl-A-Jr-Fixture: true`, so a search on that header finds them all.
 """
 
 from __future__ import annotations
 
-import time
+from email.message import EmailMessage
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 
+from . import pricing
+from .tools.gmail_tools import _SMTP
+
 API = "https://api.stripe.com/v1"
 FIXTURE_TAG = "ctrl_a_jr_fixture"
+FIXTURE_HEADER = "X-Ctrl-A-Jr-Fixture"
 
-# Stripe rejects a `due_date` that is not strictly in the future, on create AND
-# on update — an invoice cannot be backdated. A test clock is the documented way
-# around that, and it is a trap here: objects on a test clock are excluded from
-# list endpoints, so `stripe_list_failed_payments` returned 0 and the agent could
-# not find the very invoices it was meant to recover. Verified by calling the
-# agent's own tool, 2026-09-13.
+# Three requests, because "handle the biggest job" needs a real answer and a
+# single fixture makes any choice look correct.
 #
-# So: set due dates a short way into the future, then wait for them to lapse.
-# The invoices are ordinary, visible, genuinely past due, and correctly ordered.
-# The cost is that "overdue" is minutes rather than days.
-LEAD_SECONDS = 90      # until the MOST overdue invoice falls due
-STAGGER_SECONDS = 30   # gap between consecutive ranks
-
-# Three customers is enough to exercise "pick the most overdue" without making a
-# run tedious to approve by hand.
+# `expect` is the classification a correct read of `body` produces. It is NOT
+# given to the agent — it is here so the tests can price each request from the
+# menu and prove that exactly one crosses the Slack threshold. The prompt says
+# escalate above pricing.SLACK_THRESHOLD_CENTS and the task says handle the
+# biggest job; if the biggest job sat under the threshold the agent's natural
+# path would never touch Slack and the demo would silently be a two-app demo.
+# The fixtures and the prompt have to be read together; neither is wrong alone.
 #
-# `rank` is position in the overdue ordering: 0 is the MOST overdue. Amounts are
-# deliberately ordered so the most overdue invoice is also the one that crosses
-# the $500 Slack threshold in the system prompt. They used to run the other way
-# — most overdue was $42 — so the agent's natural path never touched Slack and
-# the demo was silently a two-app demo. The fixtures and the prompt have to be
-# read together; neither is wrong alone.
+# The bodies are free text on purpose: no labelled fields, model years and
+# nicknames instead of sizes ("Tahoe", "F-250"), and the add-ons described the
+# way a customer describes them ("covered in dog hair", "previous owner
+# smoked"). The agent has to classify, not pattern-match a form.
 DEFAULT_FIXTURES = [
-    {"name": "Ada Lovelace", "amount_due": 79900, "rank": 0},
-    {"name": "Grace Hopper", "amount_due": 18500, "rank": 1},
-    {"name": "Alan Turing", "amount_due": 4200, "rank": 2},
+    {
+        "name": "Marcus Webb",
+        "subject": "interior cleaning for my Tahoe?",
+        "body": (
+            "Hey there,\n\n"
+            "Got a 2019 Tahoe that honestly needs help inside. Two labs ride in the "
+            "back every weekend and the seats are covered in dog hair, plus the kids "
+            "have done a number on the carpets. Outside is fine, I run it through the "
+            "wash myself.\n\n"
+            "Any chance you could get it in this week, and what would that run me?\n\n"
+            "Thanks,\nMarcus Webb\n"
+        ),
+        "expect": {"service": "interior_detail", "size": "suv", "addons": ["pet_hair"]},
+    },
+    {
+        "name": "Denise Okafor",
+        "subject": "ceramic coating quote - F-250",
+        "body": (
+            "Good morning,\n\n"
+            "I just picked up a 2022 F-250 and I want to protect the paint properly "
+            "before winter - everyone keeps telling me ceramic is the way to go, so "
+            "that's what I'm after.\n\n"
+            "One other thing: the previous owner smoked in it and you can still smell "
+            "it on a warm day. If there's something you can do about that, add it to "
+            "the quote.\n\n"
+            "No rush on timing, I'd rather it be done right.\n\n"
+            "Denise Okafor\n"
+        ),
+        "expect": {"service": "ceramic_coating", "size": "truck", "addons": ["ozone"]},
+    },
+    {
+        "name": "Ray Alvarez",
+        "subject": "wash and wax?",
+        "body": (
+            "Hi - looking for a price on getting the outside of my Civic cleaned up. "
+            "It's a 2016, paint's gone dull and there's some tree sap on the hood from "
+            "where I park at work. Inside is already clean, I keep on top of that.\n\n"
+            "Cheapest option that actually makes it look good is fine by me.\n\n"
+            "- Ray\n"
+        ),
+        "expect": {"service": "exterior_detail", "size": "sedan", "addons": []},
+    },
 ]
 
 
@@ -62,9 +106,10 @@ class _Httpx:
 
 
 class FixtureSeeder:
-    """Creates and removes Stripe test-mode fixtures for an eval run."""
+    """Creates and removes the quote-request scenario for an eval run."""
 
-    def __init__(self, api_key: str, email: str, http: Any | None = None) -> None:
+    def __init__(self, api_key: str, email: str, app_password: str = "",
+                 http: Any | None = None, smtp: Any | None = None) -> None:
         if not isinstance(api_key, str) or not api_key.startswith("sk_test_"):
             raise ValueError(
                 "refusing to seed against a non-test Stripe key: expected sk_test_*. "
@@ -72,12 +117,18 @@ class FixtureSeeder:
             )
         if not email or "@" not in email:
             raise ValueError(
-                "a deliverable email address is required — the agent will draft mail to it, "
-                "and you need to be able to read what it sent."
+                "a deliverable email address is required — the requests are delivered to "
+                "it and the agent replies to it, so you need to be able to read both."
             )
         self.api_key = api_key
         self.email = email
+        self.app_password = app_password
         self.http = http or _Httpx()
+        # Tracked separately from `self.smtp`: an injected transport is a test
+        # double and needs no credential, while the real one cannot send without
+        # the app password and must say so before creating any Stripe object.
+        self.smtp_injected = smtp is not None
+        self.smtp = smtp or _SMTP(email, app_password)
 
     # ── transport ────────────────────────────────────────────────────────────
 
@@ -103,71 +154,54 @@ class FixtureSeeder:
 
     # ── seeding ──────────────────────────────────────────────────────────────
 
-    def seed_one(self, base: int, name: str, amount_due: int, rank: int) -> dict:
-        """One customer with one finalized invoice, due `rank` steps after `base`."""
+    def send_request_email(self, name: str, subject: str, body: str) -> bytes:
+        """Deliver one customer's request to the shop inbox, for real.
+
+        The From address must be the authenticated account — Gmail rewrites
+        anything else — so the customer's identity rides in the display name and
+        in their sign-off, which is where a real reader gets it from anyway.
+        """
+        msg = EmailMessage()
+        msg["From"] = f"{name} <{self.email}>"
+        msg["To"] = self.email
+        msg["Subject"] = subject
+        msg[FIXTURE_HEADER] = "true"
+        msg.set_content(body)
+        raw = msg.as_bytes()
+        self.smtp.send(self.email, self.email, raw)
+        return raw
+
+    def seed_one(self, name: str, subject: str, body: str, expect: dict | None = None) -> dict:
+        """One tagged Stripe customer plus the email that asks for the quote.
+
+        No invoice is created here. The invoice is the agent's job, priced from
+        the menu — seeding one would be pre-computing the answer.
+        """
         customer = self._post("customers", {
             "name": name,
             "email": self.email,
             f"metadata[{FIXTURE_TAG}]": "true",
         })
-        self._post("invoiceitems", {
-            "customer": customer["id"],
-            "amount": amount_due,
-            "currency": "usd",
-            "description": f"Overdue balance for {name}",
-        })
-        due = base + rank * STAGGER_SECONDS
-        invoice = self._post("invoices", {
-            "customer": customer["id"],
-            "collection_method": "send_invoice",
-            "due_date": due,
-            # Stripe's default here is `exclude`. Without this the pending
-            # invoice item never attaches, the invoice totals 0, and a $0
-            # invoice auto-pays on finalize — which is how this first showed
-            # up: status 'paid' on an invoice that was supposed to be overdue.
-            "pending_invoice_items_behavior": "include",
-            f"metadata[{FIXTURE_TAG}]": "true",
-        })
-        finalized = self._post(f"invoices/{invoice['id']}/finalize", {})
-        # A send_invoice invoice with no payment method must finalize to `open`.
-        # An earlier probe finalized straight to `paid`, which is not the state
-        # this agent exists to act on — fail loudly rather than seed a fixture
-        # that silently makes the demo a no-op.
-        if finalized.get("status") != "open":
-            raise RuntimeError(
-                f"invoice {finalized['id']} finalized as "
-                f"{finalized.get('status')!r}, expected 'open'"
+        self.send_request_email(name, subject, body)
+        row = {"customer_id": customer["id"], "name": name, "email": self.email,
+               "subject": subject}
+        if expect:
+            # Priced from the menu, never written down as a literal: a hardcoded
+            # expected total would drift the moment the menu changed and the
+            # fixtures would quietly stop matching what the agent can charge.
+            quote = pricing.quote(**expect)
+            row["expected_total_cents"] = quote["total_cents"]
+            row["expected_total"] = quote["total"]
+            row["over_slack_threshold"] = quote["over_slack_threshold"]
+        return row
+
+    def seed(self, fixtures: list[dict] | None = None) -> list[dict]:
+        if not self.smtp_injected and not self.app_password:
+            raise ValueError(
+                "GMAIL_APP_PASSWORD is required to seed: the requests are delivered by "
+                "SMTP so the agent has real mail to find and parse."
             )
-        return {
-            "customer_id": customer["id"],
-            "name": name,
-            "invoice_id": finalized["id"],
-            "amount_due": amount_due,
-            "rank": rank,
-            "due_date": due,
-            "hosted_invoice_url": finalized.get("hosted_invoice_url"),
-        }
-
-    def seed(self, fixtures: list[dict] | None = None,
-             wait: bool = True) -> list[dict]:
-        """Create the invoices, then wait for every due date to pass.
-
-        Returning before they lapse would hand back invoices that are merely
-        open — which is exactly the state this agent does NOT exist to act on.
-        """
-        specs = fixtures or DEFAULT_FIXTURES
-        base = int(time.time()) + LEAD_SECONDS
-        rows = [self.seed_one(base, **f) for f in specs]
-        if wait:
-            self._wait_until(max(r["due_date"] for r in rows) + 5)
-        return rows
-
-    def _wait_until(self, timestamp: int) -> None:
-        while True:
-            remaining = timestamp - time.time()
-            if remaining <= 0:
-                return
-            time.sleep(min(remaining, 5))
+        return [self.seed_one(**f) for f in (fixtures or DEFAULT_FIXTURES)]
 
     # ── listing and teardown ─────────────────────────────────────────────────
 
@@ -185,7 +219,8 @@ class FixtureSeeder:
 
         An untagged object is never touched, even in test mode — the tag is the
         only thing standing between this and someone's real customer list if a
-        live key ever slipped past the constructor.
+        live key ever slipped past the constructor. Seeded mail is not deleted;
+        see the module docstring.
         """
         removed = []
         for row in self.list_fixtures():

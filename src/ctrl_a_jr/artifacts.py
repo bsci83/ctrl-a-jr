@@ -23,6 +23,8 @@ from __future__ import annotations
 import html
 from collections.abc import Callable
 
+from . import pricing
+
 STYLE = """
 .art{border:1px solid #e3e0db;border-radius:8px;overflow:hidden;margin:0 0 16px;background:#fff}
 .art-h{background:#f6f5f3;padding:10px 14px;border-bottom:1px solid #e3e0db;
@@ -38,6 +40,11 @@ STYLE = """
           border-top:1px solid #f0e0b8}
 .slack-ch{font:13px system-ui;font-weight:600;color:#1a1a1a}
 .slack-msg{font:14px/1.55 system-ui;white-space:pre-wrap;margin-top:6px}
+.art-li{display:flex;justify-content:space-between;gap:16px;padding:5px 0;
+        font:13px system-ui;border-bottom:1px solid #f2efea}
+.art-li b{font-weight:500;color:#1a1a1a}
+.art-total{display:flex;justify-content:space-between;gap:16px;padding:10px 0 0;
+           font:15px system-ui;font-weight:650;color:#1a1a1a}
 """
 
 
@@ -74,6 +81,58 @@ def _invoice(a: dict) -> str:
         '<div class="art"><div class="art-h"><b>Stripe</b> will email this invoice</div>'
         f'<div class="art-b">{_rows([("Invoice", a.get("invoice_id"))])}</div>'
         '<div class="art-warn">Stripe sends this from your account, with a payment link.</div></div>'
+    )
+
+
+def _quote_body(a: dict) -> str:
+    """The itemised quote, RE-PRICED from the menu rather than read from the args.
+
+    The model's arguments carry a classification, never an amount, so there is
+    no number in them to display. Computing the breakdown here from the same
+    pure function the invoice uses is what makes the card and the charge the
+    same figure by construction.
+    """
+    q = pricing.quote(a.get("service"), a.get("size"), a.get("addons") or ())
+    items = "".join(
+        f'<div class="art-li"><b>{_esc(i["label"])}</b><span>{_esc(i["amount"])}</span></div>'
+        for i in q["line_items"]
+    )
+    head = _rows([
+        ("Customer", a.get("customer_name") or a.get("customer_id")),
+        ("Vehicle", q["size_label"]),
+        ("Service", q["service_label"]),
+        ("Quote", q["quote_id"]),
+    ])
+    return (f'{head}<div style="margin-top:10px">{items}'
+            f'<div class="art-total"><span>Total</span>'
+            f'<span>{_esc(q["total"])}</span></div></div>')
+
+
+def _quote_invoice(a: dict) -> str:
+    try:
+        body = _quote_body(a)
+    except Exception:  # noqa: BLE001 - the evidence page renders redacted placeholders
+        # export.py replays these renderers with withheld values, and a card that
+        # raised there would take the whole evidence page down.
+        return _lookup(a)
+    return (
+        '<div class="art"><div class="art-h"><b>Stripe invoice</b> for this quote</div>'
+        f'<div class="art-b">{body}</div>'
+        '<div class="art-warn">This creates a real invoice on your Stripe account and a '
+        'payment link the customer can pay. The amount is computed from your service '
+        'menu, not chosen by the model.</div></div>'
+    )
+
+
+def _quote(a: dict) -> str:
+    try:
+        body = _quote_body(a)
+    except Exception:  # noqa: BLE001
+        return _lookup(a)
+    return (
+        '<div class="art"><div class="art-h"><b>Price quote</b> — computed from your menu, '
+        'nothing sent</div>'
+        f'<div class="art-b">{body}</div></div>'
     )
 
 
@@ -114,9 +173,13 @@ RENDERERS: dict[str, Callable[[dict], str]] = {
     "stripe_list_failed_payments": _lookup,
     "stripe_get_customer": _lookup,
     "stripe_get_invoice": _lookup,
+    "stripe_find_customers": _lookup,
     "gmail_search_threads": _lookup,
     "gmail_read_thread": _lookup,
     "slack_lookup_user": _lookup,
+    "quote_menu": _lookup,
+    "quote_price": _quote,
+    "stripe_create_quote_invoice": _quote_invoice,
     "gmail_send": _email,
     "slack_post_message": _slack,
     "stripe_send_invoice": _invoice,
