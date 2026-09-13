@@ -14,6 +14,8 @@ from urllib.parse import parse_qs
 
 from .activity import read_log
 from .approval import ApprovalStore
+from .artifacts import STYLE as ARTIFACT_STYLE
+from .artifacts import render_artifact
 from .types import ApprovalRecord, Decision
 
 _STYLE = """
@@ -109,7 +111,9 @@ def render_page(records: list[ApprovalRecord], events: list[dict] | None = None)
         for r in records:
             cards.append(
                 f'<div class="card"><div class="tool">{html.escape(r.tool)}</div>'
-                f"<pre>{html.escape(r.rendered)}</pre>"
+                # render_artifact escapes every value it interpolates; it is the
+                # only place trusted markup enters this page.
+                f"{render_artifact(r.tool, r.args)}"
                 f'<form method="post" action="/resolve" style="display:inline">'
                 f'<input type="hidden" name="id" value="{html.escape(r.id)}">'
                 f'<button class="ok" name="decision" value="approved">Approve</button>'
@@ -121,7 +125,7 @@ def render_page(records: list[ApprovalRecord], events: list[dict] | None = None)
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<title>ctrl-a JR — approvals</title>"
         "<meta http-equiv='refresh' content='2'>"
-        f"<style>{_STYLE}</style></head><body><main>"
+        f"<style>{_STYLE}{ARTIFACT_STYLE}</style></head><body><main>"
         f"<h1>{'Waiting for your authorization' if records else 'ctrl-a JR'}</h1>"
         f"{strip}{body}</main></body></html>"
     )

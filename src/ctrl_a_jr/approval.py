@@ -40,6 +40,7 @@ class ApprovalStore:
             payload_hash=payload_hash(tool, args),
             rendered=rendered,
             decision=Decision.PENDING,
+            args=dict(args),
         )
         self._records[rec.id] = rec
         log_action(
@@ -70,6 +71,7 @@ class ApprovalStore:
             rendered=rec.rendered,
             decision=decision,
             note=note,
+            args=rec.args,
         )
         self._records[rec.id] = updated
         log_action(

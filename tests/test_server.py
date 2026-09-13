@@ -10,22 +10,35 @@ from ctrl_a_jr.approval import ApprovalStore
 from ctrl_a_jr.types import ApprovalRecord, Decision
 
 
-def _rec(rendered="To: a@b.c\nSubject: Overdue\n\nPlease pay $42.00."):
+def _rec(body="Please pay $42.00.", subject="Overdue"):
+    """The display derives from `args`, not from `rendered`, so what the human sees
+    cannot drift from what executes. Tests exercise that same path."""
+    args = {"to": "a@b.c", "subject": subject, "body": body}
     return ApprovalRecord(id="ap_1", tool="gmail_send", payload_hash="deadbeef",
-                          rendered=rendered, decision=Decision.PENDING)
+                          rendered=f"To: a@b.c\nSubject: {subject}\n\n{body}",
+                          decision=Decision.PENDING, args=args)
 
 
 def test_page_shows_the_rendered_artifact_not_json():
     html = server.render_page([_rec()])
     assert "Please pay $42.00." in html
-    assert "Subject: Overdue" in html
+    assert "Overdue" in html
+    assert "a@b.c" in html
     assert "ap_1" in html
 
 
 def test_page_escapes_html_in_the_rendered_body():
-    html = server.render_page([_rec("<script>alert(1)</script>")])
+    """The body can carry text quoted from a customer's own email."""
+    html = server.render_page([_rec(body="<script>alert(1)</script>")])
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_page_escapes_html_in_every_artifact_field():
+    """Not just the body — the subject and recipient are attacker-reachable too."""
+    html = server.render_page([_rec(subject="<img src=x onerror=alert(1)>")])
+    assert "<img src=x" not in html
+    assert "&lt;img" in html
 
 
 def test_page_has_approve_and_deny_controls():
@@ -52,11 +65,14 @@ def _live_approver():
 def test_get_serves_the_pending_approval_over_http():
     store, approver = _live_approver()
     try:
-        store.request("gmail_send", {"to": "a@b.c"}, rendered="To: a@b.c\n\nPlease pay $42.00.")
+        store.request("gmail_send",
+                      {"to": "a@b.c", "subject": "Overdue", "body": "Please pay $42.00."},
+                      rendered="To: a@b.c\n\nPlease pay $42.00.")
         with urllib.request.urlopen(approver.url, timeout=5) as r:
             body = r.read().decode()
         assert r.status == 200
         assert "Please pay $42.00." in body
+        assert "a@b.c" in body
     finally:
         approver.stop()
 

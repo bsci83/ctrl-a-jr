@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -31,3 +31,6 @@ class ApprovalRecord:
     rendered: str
     decision: Decision
     note: str | None = None
+    # The exact arguments this approval authorises. The display is DERIVED from
+    # these, so what the human sees cannot drift from what executes.
+    args: dict = field(default_factory=dict)
