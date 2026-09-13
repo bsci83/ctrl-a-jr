@@ -25,3 +25,6 @@ out/
 
 # Eval output
 verdict.json
+
+# Fan-out agent worktrees live here; they are checkouts, not content.
+.claude/worktrees/
