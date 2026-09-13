@@ -169,10 +169,9 @@ def register_slack_tools(registry: Registry, client: SlackClient) -> None:
     ))
     registry.register(ToolSpec(
         name="slack_post_message",
-        description="Post a note to the team's escalation channel. Use this to escalate a "
-                    "high-value overdue invoice after the recovery email is sent. You do "
-                    "not choose the channel — it is configured by the operator. Write only "
-                    "the message text.",
+        description="Post a note to the shop's channel. Use this to flag a high-value job "
+                    "after the customer's quote has been sent. You do not choose the "
+                    "channel — it is configured by the operator. Write only the message text.",
         schema={"type": "object",
                 "properties": {"text": {"type": "string"}},
                 "required": ["text"]},

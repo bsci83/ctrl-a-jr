@@ -21,26 +21,39 @@ from .providers import ProviderState, client_from_env, register_provider_tools
 from .registry import Registry
 from .server import TOKEN_ENV, WebApprover
 from .tools.gmail_tools import GmailClient, register_gmail_tools
+from .tools.quote_tools import register_quote_tools
 from .tools.report_tools import register_report_tools
 from .tools.slack_tools import SlackClient, register_slack_tools
 from .tools.stripe_tools import StripeClient, register_stripe_tools
 
-SYSTEM = """You recover failed payments for a small business.
+SYSTEM = """You handle inbound quote requests for an auto detailing shop.
 
 Work in this order:
-1. List open invoices that need recovery.
-2. For the most overdue one, fetch the invoice and the customer.
-3. Search email from that customer so you know what they have already said.
-4. Draft ONE recovery email. Use the real amount and due date from Stripe —
-   never estimate or invent a figure.
-5. Send it. A human reviews every send before it leaves.
-6. If the amount is over $500, post a short note to Slack.
-7. Write a short report of what you did.
+1. Read the shop's service menu so you know what can be quoted.
+2. Search the shop inbox and read the quote requests waiting there. Work from
+   what the customer actually wrote — the vehicle, its condition and what they
+   asked for are in their own words, not in any structured field.
+3. Classify each request: ONE service, ONE vehicle size, and any add-ons, using
+   only keys from the menu. If a request does not map onto the menu, say so and
+   stop rather than picking the nearest thing.
+4. Price it with quote_price. The price comes from the menu. Never estimate,
+   never add figures up yourself, never invent a price.
+5. For the job the task names, find the customer in Stripe by the shop's email
+   address and match them by the name on the request. Then create the invoice
+   with stripe_create_quote_invoice, passing the same classification you priced.
+   You do not choose the amount — the invoice is priced from the menu.
+6. Reply to the customer with the itemised quote and the hosted payment link the
+   invoice returned. Use the real figures and the real link from the tools; do
+   not retype a price from memory or compose a payment URL yourself. A human
+   reviews every send before it leaves.
+7. If the total is over $500, post a short note to Slack so the shop sees the
+   big job. You do not choose the channel.
+8. Write a short report of what you did.
 
 If a human denies an action, report the denial and stop. Do not retry it and do
 not attempt the same thing through a different tool."""
 
-USER_TASK = "Recover the most overdue open invoice."
+USER_TASK = "Quote the biggest job waiting in the shop inbox."
 
 
 ENV_FILES = (Path(".env.local"), Path(".env"))
@@ -79,6 +92,7 @@ def _build(out_dir: Path) -> tuple[Registry, ProviderState]:
                                           _require("GMAIL_APP_PASSWORD")))
     register_slack_tools(reg, SlackClient(_require("SLACK_BOT_TOKEN"),
                                           _require("CTRLA_JR_SLACK_CHANNEL")))
+    register_quote_tools(reg)
     register_report_tools(reg, out_dir)
     state = ProviderState(os.environ.get("CTRLA_JR_PROVIDER", "minimax"),
                           os.environ.get("CTRLA_JR_MODEL", "MiniMax-M3"))
@@ -127,18 +141,20 @@ def _make_approver(store: ApprovalStore, mode: str, port: int):
 
 
 def _fixtures(action: str) -> int:
-    """Dev tooling. Deliberately NOT registered as agent tools — the agent may read
-    invoices and ask Stripe to send them, never create or delete a customer."""
+    """Dev tooling. Deliberately NOT registered as agent tools — the agent may look
+    a customer up and invoice a quoted job, never create or delete a customer."""
     from .fixtures import FixtureSeeder
 
-    seeder = FixtureSeeder(_require("STRIPE_SECRET_KEY"), _require("GMAIL_ADDRESS"))
+    seeder = FixtureSeeder(_require("STRIPE_SECRET_KEY"), _require("GMAIL_ADDRESS"),
+                           _require("GMAIL_APP_PASSWORD"))
     if action == "seed":
         rows = seeder.seed()
         for r in rows:
-            print(f"  {r['name']:<16} {r['invoice_id']}  "
-                  f"${r['amount_due'] / 100:,.2f}  rank {r['rank']} "
-                  f"(most overdue = 0)")
-        print(f"\nSeeded {len(rows)} overdue invoice(s) to {seeder.email}.")
+            flag = "  → Slack" if r.get("over_slack_threshold") else ""
+            print(f"  {r['name']:<16} {r['customer_id']:<20} "
+                  f"{r.get('expected_total', '?'):>10}{flag}")
+        print(f"\nSeeded {len(rows)} quote request(s) to {seeder.email}. "
+              "Expected totals are what the MENU prices, not a promise about the run.")
         return 0
     if action == "list":
         rows = seeder.list_fixtures()
@@ -155,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="ctrl-a-jr")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    run_p = sub.add_parser("run", help="run one recovery pass")
+    run_p = sub.add_parser("run", help="run one quote-handling pass")
     run_p.add_argument("--out", default="./out", type=Path)
     run_p.add_argument("--port", default=8765, type=int)
     run_p.add_argument(

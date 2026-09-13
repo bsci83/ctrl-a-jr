@@ -2,13 +2,14 @@
 
 The lesson from this build's five review findings: a fake that records requests
 and is never read proves nothing. Every test here asserts what actually goes on
-the wire — method, path, and body — not merely that a call returned.
+the wire — method, path, body, and for mail the raw bytes handed to SMTP — not
+merely that a call returned.
 """
 
 
 import pytest
 
-from ctrl_a_jr import fixtures
+from ctrl_a_jr import fixtures, pricing
 
 
 class FakeHTTP:
@@ -25,166 +26,182 @@ class FakeHTTP:
         return self.responses.get(path, {})
 
 
-def _seeder(responses=None):
-    return fixtures.FixtureSeeder("sk_test_x", "me@example.com",
-                                  http=FakeHTTP(responses or {}))
+class FakeSMTP:
+    """Records the envelope and the raw message bytes, which is the wire."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, from_addr, to_addr, message_bytes):
+        self.sent.append({"from": from_addr, "to": to_addr, "raw": message_bytes})
+
+
+def _seeder(responses=None, smtp=None):
+    return fixtures.FixtureSeeder("sk_test_x", "shop@example.com", "app pass word here",
+                                  http=FakeHTTP(responses or {}), smtp=smtp or FakeSMTP())
 
 
 # ── construction guards ──────────────────────────────────────────────────────
 
 def test_a_live_key_is_refused():
     with pytest.raises(ValueError, match="sk_test"):
-        fixtures.FixtureSeeder("sk_live_danger", "me@example.com", http=FakeHTTP())
+        fixtures.FixtureSeeder("sk_live_danger", "me@example.com", smtp=FakeSMTP())
 
 
 def test_a_non_string_key_is_refused_with_value_error():
     with pytest.raises(ValueError):
-        fixtures.FixtureSeeder(None, "me@example.com", http=FakeHTTP())
+        fixtures.FixtureSeeder(None, "me@example.com", smtp=FakeSMTP())
 
 
 def test_a_key_without_the_trailing_underscore_is_refused():
     with pytest.raises(ValueError, match="sk_test"):
-        fixtures.FixtureSeeder("sk_testXYZ", "me@example.com", http=FakeHTTP())
+        fixtures.FixtureSeeder("sk_testXYZ", "me@example.com", smtp=FakeSMTP())
 
 
 def test_a_missing_or_malformed_email_is_refused():
     with pytest.raises(ValueError, match="email"):
-        fixtures.FixtureSeeder("sk_test_x", "", http=FakeHTTP())
+        fixtures.FixtureSeeder("sk_test_x", "", smtp=FakeSMTP())
     with pytest.raises(ValueError, match="email"):
-        fixtures.FixtureSeeder("sk_test_x", "not-an-address", http=FakeHTTP())
+        fixtures.FixtureSeeder("sk_test_x", "not-an-address", smtp=FakeSMTP())
+
+
+def test_seeding_without_an_app_password_refuses_before_touching_stripe():
+    """Half a fixture set — customers in Stripe, no mail in the inbox — is worse
+    than none: the agent finds nothing to read and the run looks like a model
+    failure."""
+    s = fixtures.FixtureSeeder("sk_test_x", "shop@example.com", "", http=FakeHTTP())
+    with pytest.raises(ValueError, match="GMAIL_APP_PASSWORD"):
+        s.seed()
+    assert s.http.requests == []
 
 
 # ── seeding: assert the wire, not the return value ───────────────────────────
 
-BASE = 1_900_000_000
-
-
 def _seed_responses():
-    return {
-        "customers": {"id": "cus_1"},
-        "invoiceitems": {"id": "ii_1"},
-        "invoices": {"id": "in_1"},
-        "invoices/in_1/finalize": {"id": "in_1", "status": "open",
-                                   "hosted_invoice_url": "https://pay.stripe.com/x"},
-    }
+    return {"customers": {"id": "cus_1"}}
 
 
-def _seed_one(s, name="Ada Lovelace", amount=4200, rank=0):
-    return s.seed_one(BASE, name, amount, rank)
+def test_seed_one_creates_a_tagged_customer_and_sends_the_request_email():
+    smtp = FakeSMTP()
+    s = _seeder(_seed_responses(), smtp=smtp)
+    s.seed_one(**fixtures.DEFAULT_FIXTURES[0])
+    assert [r["path"] for r in s.http.requests] == ["customers"]
+    assert s.http.requests[0]["data"][f"metadata[{fixtures.FIXTURE_TAG}]"] == "true"
+    assert len(smtp.sent) == 1
 
 
-def test_seed_one_creates_customer_item_invoice_and_finalizes_in_order():
-    s = _seeder(_seed_responses())
-    _seed_one(s)
-    assert [r["path"] for r in s.http.requests] == [
-        "customers", "invoiceitems", "invoices", "invoices/in_1/finalize",
-    ]
-    assert all(r["method"] == "POST" for r in s.http.requests)
+def test_the_request_email_is_really_sent_with_the_customer_text_on_the_wire():
+    """The agent must parse a human message. If the body never left this process
+    there is nothing in the inbox and the demo is the agent being told the answer."""
+    smtp = FakeSMTP()
+    s = _seeder(_seed_responses(), smtp=smtp)
+    spec = fixtures.DEFAULT_FIXTURES[0]
+    s.seed_one(**spec)
+    wire = smtp.sent[0]
+    raw = wire["raw"].decode()
+    assert wire["from"] == "shop@example.com"
+    assert wire["to"] == "shop@example.com"
+    assert f"Subject: {spec['subject']}" in raw
+    assert "2019 Tahoe" in raw
+    assert "Marcus Webb" in raw
 
 
-def test_every_created_object_carries_the_fixture_tag():
-    """Teardown deletes by tag. An untagged object could never be cleaned up —
-    and worse, an untagged object is indistinguishable from real data."""
-    s = _seeder(_seed_responses())
-    _seed_one(s)
-    by_path = {r["path"]: r["data"] for r in s.http.requests}
-    tag_key = f"metadata[{fixtures.FIXTURE_TAG}]"
-    assert by_path["customers"][tag_key] == "true"
-    assert by_path["invoices"][tag_key] == "true"
+def test_the_customer_name_rides_in_the_from_display_name():
+    """Gmail rewrites a From address that is not the authenticated account, so
+    the display name and the sign-off are the only identity the agent gets."""
+    smtp = FakeSMTP()
+    _seeder(_seed_responses(), smtp=smtp).seed_one(**fixtures.DEFAULT_FIXTURES[1])
+    raw = smtp.sent[0]["raw"].decode()
+    assert "From: Denise Okafor <shop@example.com>" in raw
 
 
-def test_the_due_date_is_in_the_future_at_creation():
-    """Stripe rejects a due_date that is not strictly future, on create AND on
-    update. The fixture becomes overdue by lapsing, not by backdating."""
-    s = _seeder(_seed_responses())
-    _seed_one(s, rank=0)
-    body = next(r["data"] for r in s.http.requests if r["path"] == "invoices")
-    assert int(body["due_date"]) == BASE
+def test_every_seeded_message_carries_the_fixture_header():
+    """Mail teardown is manual — the agent's IMAP path is readonly. This header
+    is how the seeded messages are found again."""
+    smtp = FakeSMTP()
+    _seeder(_seed_responses(), smtp=smtp).seed()
+    for wire in smtp.sent:
+        assert f"{fixtures.FIXTURE_HEADER}: true" in wire["raw"].decode()
 
 
-def test_rank_orders_the_due_dates_so_rank_zero_is_most_overdue():
-    due = [_seed_one(_seeder(_seed_responses()), rank=r)["due_date"] for r in (0, 1, 2)]
-    assert due == sorted(due), "rank 0 must fall due first"
-    assert due[1] - due[0] == fixtures.STAGGER_SECONDS
-
-
-def test_no_test_clock_is_used():
-    """Objects on a test clock are excluded from Stripe's list endpoints, so
-    stripe_list_failed_payments returned 0 and the agent could not find the
-    invoices it existed to recover. Verified against live Stripe, 2026-09-13."""
-    s = _seeder(_seed_responses())
-    s.seed(wait=False)
-    assert not any("test_clock" in r["path"] for r in s.http.requests)
-    assert all("test_clock" not in (r["data"] or {}) for r in s.http.requests)
-
-
-def test_the_most_overdue_fixture_also_crosses_the_slack_threshold():
-    """The prompt says post to Slack above $500 and the agent works the MOST
-    overdue invoice. These used to disagree — most overdue was $42 — so the
-    agent's natural path never touched Slack and the submission was silently a
-    two-app demo. Nothing else in the suite can catch that."""
-    most_overdue = min(fixtures.DEFAULT_FIXTURES, key=lambda f: f["rank"])
-    assert most_overdue["amount_due"] > 50000
-
-
-def test_seed_waits_for_every_due_date_to_lapse(monkeypatch):
-    """Returning early hands back invoices that are merely open — the one state
-    this agent does not exist to act on."""
-    waited = {}
-    s = _seeder(_seed_responses())
-    monkeypatch.setattr(s, "_wait_until", lambda ts: waited.setdefault("until", ts))
+def test_seed_creates_three_requests_and_three_customers():
+    smtp = FakeSMTP()
+    s = _seeder(_seed_responses(), smtp=smtp)
     rows = s.seed()
-    assert waited["until"] > max(r["due_date"] for r in rows)
+    assert len(rows) == 3
+    assert len(smtp.sent) == 3
+    assert [r["path"] for r in s.http.requests] == ["customers"] * 3
 
 
-def test_pending_invoice_items_are_explicitly_included():
-    """Stripe's default is `exclude`. Without this the item never attaches, the
-    invoice totals 0, and a $0 invoice auto-pays on finalize — a fixture that
-    looks seeded and gives the agent nothing to recover."""
+def test_the_request_bodies_contain_no_structured_fields():
+    """The point of the demo is that the agent reads prose. A body carrying
+    'service: interior_detail' would be a form, and parsing a form proves
+    nothing about parsing a customer."""
+    for spec in fixtures.DEFAULT_FIXTURES:
+        body = spec["body"].lower()
+        for key in (*pricing.SERVICES, *pricing.SIZES, *pricing.ADDONS):
+            assert key not in body, f"{key} appears verbatim in {spec['name']}'s request"
+
+
+def test_exactly_one_request_crosses_the_slack_threshold():
+    """One above and two below is what makes the escalation step meaningful:
+    an agent that posts to Slack every time, or never, both look correct when
+    every fixture sits on the same side of the line."""
+    totals = [pricing.quote(**spec["expect"])["total_cents"]
+              for spec in fixtures.DEFAULT_FIXTURES]
+    over = [t for t in totals if t > pricing.SLACK_THRESHOLD_CENTS]
+    assert len(over) == 1
+
+
+def test_the_biggest_job_is_the_one_that_crosses_the_threshold():
+    """The task says handle the biggest job and the prompt says escalate above
+    the threshold. If the biggest job sat under it the agent's natural path would
+    never touch Slack and the submission would silently be a two-app demo."""
+    priced = [(pricing.quote(**s["expect"])["total_cents"], s["name"])
+              for s in fixtures.DEFAULT_FIXTURES]
+    biggest = max(priced)
+    assert biggest[0] > pricing.SLACK_THRESHOLD_CENTS
+    assert biggest[1] == "Denise Okafor"
+
+
+def test_every_expected_classification_is_priceable_from_the_menu():
+    """A fixture describing a job the menu cannot price would look like the agent
+    failing to classify."""
+    for spec in fixtures.DEFAULT_FIXTURES:
+        assert pricing.quote(**spec["expect"])["total_cents"] > 0
+
+
+def test_seed_reports_the_expected_total_and_the_threshold_flag():
     s = _seeder(_seed_responses())
-    _seed_one(s)
-    body = next(r["data"] for r in s.http.requests if r["path"] == "invoices")
-    assert body["pending_invoice_items_behavior"] == "include"
+    rows = s.seed()
+    by_name = {r["name"]: r for r in rows}
+    assert by_name["Denise Okafor"]["over_slack_threshold"] is True
+    assert by_name["Ray Alvarez"]["over_slack_threshold"] is False
+    assert by_name["Ray Alvarez"]["expected_total"] == "$129.00"
 
 
-def test_the_invoice_uses_send_invoice_collection():
+def test_no_invoice_is_ever_seeded():
+    """Pricing the job is the agent's work. A seeded invoice would pre-compute
+    the one number the whole design exists to keep out of the model's hands."""
     s = _seeder(_seed_responses())
-    _seed_one(s)
-    invoice_body = next(r["data"] for r in s.http.requests if r["path"] == "invoices")
-    assert invoice_body["collection_method"] == "send_invoice"
-
-
-def test_the_amount_and_customer_reach_the_invoice_item():
-    s = _seeder(_seed_responses())
-    _seed_one(s)
-    item = next(r["data"] for r in s.http.requests if r["path"] == "invoiceitems")
-    assert item["amount"] == 4200
-    assert item["customer"] == "cus_1"
-    assert item["currency"] == "usd"
-
-
-def test_seed_one_returns_the_ids_a_run_needs():
-    s = _seeder(_seed_responses())
-    out = _seed_one(s)
-    assert out["customer_id"] == "cus_1"
-    assert out["invoice_id"] == "in_1"
-    assert out["hosted_invoice_url"] == "https://pay.stripe.com/x"
-
-
-def test_seed_defaults_to_three_fixtures_with_distinct_ranks():
-    s = _seeder(_seed_responses())
-    out = s.seed(wait=False)
-    assert len(out) == 3
-    ranks = [f["rank"] for f in fixtures.DEFAULT_FIXTURES]
-    assert len(set(ranks)) == 3, "the agent must have a most-overdue one to pick"
+    s.seed()
+    assert not [r for r in s.http.requests if "invoice" in r["path"]]
 
 
 def test_the_bearer_token_is_sent_as_a_header_and_never_in_a_body():
     s = _seeder(_seed_responses())
-    _seed_one(s)
+    s.seed()
     for r in s.http.requests:
         assert r["headers"]["Authorization"] == "Bearer sk_test_x"
         assert "sk_test_x" not in str(r["data"])
+
+
+def test_the_app_password_never_reaches_stripe_or_the_message_body():
+    smtp = FakeSMTP()
+    s = _seeder(_seed_responses(), smtp=smtp)
+    s.seed()
+    assert all("app pass" not in str(r["data"]) for r in s.http.requests)
+    assert all(b"app pass" not in w["raw"] for w in smtp.sent)
 
 
 # ── teardown safety: the important tests ─────────────────────────────────────
@@ -192,7 +209,7 @@ def test_the_bearer_token_is_sent_as_a_header_and_never_in_a_body():
 def test_teardown_deletes_only_tagged_customers():
     """The tag is the only thing between this and someone's real customer list."""
     s = _seeder({"customers": {"data": [
-        {"id": "cus_mine", "name": "Ada", "email": "me@example.com",
+        {"id": "cus_mine", "name": "Ada", "email": "shop@example.com",
          "metadata": {fixtures.FIXTURE_TAG: "true"}},
         {"id": "cus_REAL", "name": "A Real Customer", "email": "real@client.com",
          "metadata": {}},
@@ -218,9 +235,16 @@ def test_teardown_on_an_empty_account_deletes_nothing():
     assert s.teardown() == []
 
 
+def test_teardown_sends_no_mail():
+    smtp = FakeSMTP()
+    s = _seeder({"customers": {"data": []}}, smtp=smtp)
+    s.teardown()
+    assert smtp.sent == []
+
+
 def test_list_fixtures_returns_only_tagged_customers():
     s = _seeder({"customers": {"data": [
-        {"id": "cus_mine", "name": "Ada", "email": "me@example.com",
+        {"id": "cus_mine", "name": "Ada", "email": "shop@example.com",
          "metadata": {fixtures.FIXTURE_TAG: "true"}},
         {"id": "cus_REAL", "name": "Real", "email": "real@client.com", "metadata": {}},
     ]}})
