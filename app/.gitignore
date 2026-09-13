@@ -7,3 +7,6 @@ next-env.d.ts
 # Real run data, copied in from web/evidence.json at build time. Never
 # committed — same reason web/.gitignore excludes it.
 public/evidence.json
+
+# Local secrets. Never committed.
+.env*.local
