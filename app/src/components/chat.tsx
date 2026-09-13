@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge, Mono, Panel, Withheld, cn } from "./primitives";
 import type { AgentTurn, RunPayload, RunSummary } from "@/lib/types-agent";
+import { canListen, canSpeak, listen, speak, stopSpeaking } from "@/lib/voice";
 
 /**
  * The console. This is the surface that makes the agent a thing you can talk
@@ -38,6 +39,12 @@ export function Chat() {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // Voice is a progressive enhancement on a working text UI: both directions are
+  // capability-checked and off unless the operator turns them on.
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [listening, setListening] = useState(false);
+  const stopListenRef = useRef<null | (() => void)>(null);
+  const spokenRef = useRef<string | null>(null);
   const [since, setSince] = useState<number | null>(null);
 
   const runIdRef = useRef<string | null>(null);
@@ -192,6 +199,45 @@ export function Chat() {
 
   const canSend = busy === null && (run === null || run.status === "done" || run.status === "failed");
 
+  useEffect(() => {
+    if (!voiceOn) return;
+    const turns = run?.conversation ?? [];
+    let latest: string | null = null;
+    for (const turn of turns) {
+      if (turn.kind === "assistant" && turn.text?.trim()) latest = turn.text;
+    }
+    // Keyed on the text, not an index: polling re-delivers the same
+    // conversation every two seconds and would otherwise re-speak it forever.
+    if (latest && latest !== spokenRef.current) {
+      spokenRef.current = latest;
+      speak(latest);
+    }
+  }, [run, voiceOn]);
+
+  useEffect(() => () => {
+    stopListenRef.current?.();
+    stopSpeaking();
+  }, []);
+
+  const toggleListening = useCallback(() => {
+    if (listening) {
+      stopListenRef.current?.();
+      stopListenRef.current = null;
+      setListening(false);
+      return;
+    }
+    // Speaking while listening makes the agent transcribe itself.
+    stopSpeaking();
+    setListening(true);
+    stopListenRef.current = listen(
+      (text) => setDraft((d) => (d ? `${d} ${text}` : text)),
+      () => {
+        stopListenRef.current = null;
+        setListening(false);
+      },
+    );
+  }, [listening]);
+
   return (
     <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,17rem)_minmax(0,1fr)]">
       <div className="lg:sticky lg:top-20 lg:max-h-[calc(100vh-9rem)]">
@@ -254,6 +300,10 @@ export function Chat() {
           canSend={canSend}
           busy={busy}
           status={run?.status ?? null}
+          voiceOn={voiceOn}
+          setVoiceOn={setVoiceOn}
+          listening={listening}
+          onToggleListening={toggleListening}
         />
       </div>
     </div>
@@ -530,12 +580,20 @@ function Composer({
   canSend,
   busy,
   status,
+  voiceOn,
+  setVoiceOn,
+  listening,
+  onToggleListening,
 }: {
   draft: string;
   setDraft: (v: string) => void;
   onSend: () => void;
   canSend: boolean;
   busy: Busy;
+  voiceOn: boolean;
+  setVoiceOn: (v: boolean) => void;
+  listening: boolean;
+  onToggleListening: () => void;
   status: string | null;
 }) {
   const blocked =
@@ -566,6 +624,46 @@ function Composer({
           }
           className="min-w-0 flex-1 resize-none bg-transparent text-[0.8125rem] leading-relaxed text-[var(--on-surface)] outline-none placeholder:text-[var(--on-surface-muted)] disabled:cursor-not-allowed"
         />
+        <button
+          type="button"
+          onClick={onToggleListening}
+          disabled={!canSend || !canListen()}
+          title={
+            canListen()
+              ? listening
+                ? "Stop listening"
+                : "Speak your instruction"
+              : "This browser has no speech recognition"
+          }
+          aria-pressed={listening}
+          aria-label="Dictate a message"
+          className={cn(
+            "shrink-0 rounded-lg px-2.5 py-2 text-sm transition-opacity ghost-border",
+            !canSend || !canListen() ? "opacity-30" : "hover:opacity-80",
+            listening && "animate-pulse",
+          )}
+          style={listening ? { background: "var(--danger, #b00)", color: "#fff" } : undefined}
+        >
+          {listening ? "\u25A0" : "\u{1F3A4}"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (voiceOn) stopSpeaking();
+            setVoiceOn(!voiceOn);
+          }}
+          disabled={!canSpeak()}
+          title={canSpeak() ? "Read the agent's replies aloud" : "This browser cannot speak"}
+          aria-pressed={voiceOn}
+          aria-label="Speak replies"
+          className={cn(
+            "shrink-0 rounded-lg px-2.5 py-2 text-sm transition-opacity ghost-border",
+            !canSpeak() ? "opacity-30" : "hover:opacity-80",
+            voiceOn && "font-bold",
+          )}
+        >
+          {voiceOn ? "\u{1F50A}" : "\u{1F507}"}
+        </button>
         <button
           type="button"
           onClick={onSend}
