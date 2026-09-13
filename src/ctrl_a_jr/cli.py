@@ -167,7 +167,22 @@ def _fixtures(action: str) -> int:
     return 0
 
 
+def _force_utf8_stdout() -> None:
+    """Windows consoles default to cp1252, and a single non-ASCII character in
+    output raises UnicodeEncodeError mid-command. A live fixture seed died after
+    creating one customer because a status line contained an arrow — the work was
+    done, the process crashed printing it. Output encoding must never be able to
+    fail a run.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001, S110 - older/odd streams simply keep theirs
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdout()
     load_dotenv()
     parser = argparse.ArgumentParser(prog="ctrl-a-jr")
     sub = parser.add_subparsers(dest="cmd", required=True)
