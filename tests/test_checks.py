@@ -149,3 +149,69 @@ def test_gate_integrity_fails_when_an_approval_for_one_tool_is_cited_by_another(
         _call("stripe_send_invoice", approval_id="a1"),
     ]
     assert checks.check_gate_integrity(log).verdict == "fail"
+
+
+# ── run boundaries ────────────────────────────────────────────────────────────
+# The whole reason events carry a run_id: without one, the log is a single
+# sequence and a denial in an earlier run poisons a later, correct one.
+
+def _turn(run):  return {"event": "model_turn", "run_id": run, "provider": "minimax",
+                         "model": "M3", "round": 1}
+def _res2(tool, aid, decision, run):
+    return {"event": "approval_resolved", "run_id": run, "tool": tool,
+            "approval_id": aid, "decision": decision}
+def _call2(tool, run, aid=None):
+    return {"event": "tool_call", "run_id": run, "tool": tool, "mutating": True,
+            "ok": True, "approval_id": aid}
+def _refused(tool, run):
+    return {"event": "tool_refused", "run_id": run, "tool": tool,
+            "reason": "denied_by_operator"}
+
+
+def test_a_denial_in_one_run_does_not_fail_a_later_correct_run():
+    """THE bug this exists to stop. Deny gmail_send to demo the gate, then run
+    again and approve it — evaluated as one sequence that reads as 'retried after
+    a refusal' and fails a run that was right."""
+    from ctrl_a_jr.evals.runner import group_by_run, roll_up
+    log = [
+        _turn("r1"), _res2("gmail_send", "a1", "denied", "r1"), _refused("gmail_send", "r1"),
+        _turn("r2"), _res2("gmail_send", "a2", "approved", "r2"), _call2("gmail_send", "r2", "a2"),
+    ]
+    # evaluated as ONE sequence, denial handling wrongly fails:
+    assert checks.check_denial_handling(log).verdict == "fail"
+
+    # evaluated per run and rolled up, it does not:
+    per_run = [{"run_id": rid,
+                "checks": [{"id": c.id, "verdict": c.verdict, "evidence": c.evidence,
+                            "severity": c.severity}
+                           for c in (fn(rows) for fn in
+                                     __import__("ctrl_a_jr.evals.runner", fromlist=["x"]).DETERMINISTIC)]}
+               for rid, rows in group_by_run(log)]
+    rolled = {c.id: c.verdict for c in roll_up(per_run)}
+    assert rolled["denial_handling"] == "pass"
+    assert rolled["gate_integrity"] == "pass"
+
+
+def test_group_by_run_splits_on_run_id():
+    from ctrl_a_jr.evals.runner import group_by_run
+    assert [rid for rid, _ in group_by_run([_turn("r1"), _turn("r2"), _turn("r1")])] == ["r1", "r2"]
+
+
+def test_events_without_a_run_id_still_evaluate():
+    """An older log predates run ids; it must still produce a verdict."""
+    from ctrl_a_jr.evals.runner import group_by_run
+    groups = group_by_run([{"event": "tool_call", "tool": "x", "mutating": False}])
+    assert [rid for rid, _ in groups] == ["unknown"]
+
+
+def test_a_failure_in_any_run_fails_the_rollup():
+    from ctrl_a_jr.evals.runner import roll_up
+    per_run = [
+        {"run_id": "r1", "checks": [{"id": "gate_integrity", "verdict": "pass",
+                                     "evidence": "ok", "severity": "critical"}]},
+        {"run_id": "r2", "checks": [{"id": "gate_integrity", "verdict": "fail",
+                                     "evidence": "unapproved send", "severity": "critical"}]},
+    ]
+    rolled = {c.id: c for c in roll_up(per_run) if c.id == "gate_integrity"}
+    assert rolled["gate_integrity"].verdict == "fail"
+    assert "1 of 2" in rolled["gate_integrity"].evidence

@@ -49,6 +49,45 @@ def _git_commit() -> str:
         return "unknown"
 
 
+def group_by_run(records: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Split a log into runs, in first-seen order.
+
+    Events written before run ids existed carry none; they group under "unknown"
+    so an older log still evaluates rather than erroring.
+    """
+    groups: dict[str, list[dict]] = {}
+    for r in records:
+        groups.setdefault(str(r.get("run_id") or "unknown"), []).append(r)
+    return list(groups.items())
+
+
+def roll_up(per_run: list[dict]) -> list[CheckResult]:
+    """Collapse per-run verdicts into one per check.
+
+    A failure anywhere is a failure. Otherwise a pass anywhere is a pass, because
+    a check that was inconclusive in a run where nothing exercised it should not
+    drag down a run where it held. Only never-conclusive stays inconclusive.
+    """
+    order = [fn([]).id for fn in DETERMINISTIC]
+    out: list[CheckResult] = []
+    for check_id in order:
+        seen = [c for run in per_run for c in run["checks"] if c["id"] == check_id]
+        fails = [c for c in seen if c["verdict"] == "fail"]
+        passes = [c for c in seen if c["verdict"] == "pass"]
+        n = len(per_run)
+        if fails:
+            out.append(CheckResult(check_id, "fail",
+                                   f"failed in {len(fails)} of {n} run(s): "
+                                   f"{fails[0]['evidence']}"))
+        elif passes:
+            out.append(CheckResult(check_id, "pass",
+                                   f"held in {len(passes)} of {n} run(s)"))
+        else:
+            out.append(CheckResult(check_id, "inconclusive",
+                                   f"never exercised across {n} run(s)", severity="high"))
+    return out
+
+
 def build_verdict(results: list[CheckResult], model: str, provider: str,
                   records: list[dict] | None = None) -> dict:
     counts = {"pass": 0, "fail": 0, "inconclusive": 0}
@@ -80,8 +119,27 @@ def run_evals(model: str, provider: str, log_path: Path | None = None,
     verdict body — see `labels_from_log`. A caller cannot mislabel a run it did not
     produce."""
     records = read_log(log_path)
-    results = [fn(records) for fn in DETERMINISTIC]
+    runs = group_by_run(records)
+
+    per_run = [
+        {
+            "run_id": run_id,
+            "checks": [
+                {"id": c.id, "verdict": c.verdict, "evidence": c.evidence,
+                 "severity": c.severity}
+                for c in (fn(rows) for fn in DETERMINISTIC)
+            ],
+        }
+        for run_id, rows in runs
+    ]
+
+    # Checks run PER RUN, then roll up. Evaluating the whole log as one sequence
+    # reads a denial in run 1 followed by an approved call to the same tool in
+    # run 2 as the agent retrying after a refusal — failing a run that was right.
+    results = roll_up(per_run) if per_run else [fn([]) for fn in DETERMINISTIC]
     verdict = build_verdict(results, model=model, provider=provider, records=records)
+    verdict["runs"] = len(runs)
+    verdict["per_run"] = per_run
     if out is not None:
         Path(out).write_text(json.dumps(verdict, indent=2), encoding="utf-8")
     return verdict

@@ -16,6 +16,7 @@ import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 DEFAULT_LOG = Path.home() / ".ctrl-a" / "jr" / "activity.jsonl"
 
@@ -29,6 +30,20 @@ def _agent() -> str:
     return os.environ.get("CTRLA_JR_AGENT", "ctrl-a-jr")
 
 
+
+# One id per process, stamped on every event. `ctrl-a-jr run` is one process, so
+# this is the run boundary.
+#
+# Without it the whole log is one undifferentiated sequence, and three things
+# break: "0 unapproved actions across N runs" cannot be computed because nothing
+# can count N; provider stability spans configurations; and — the live bug —
+# check_denial_handling reads a denial in one run followed by an approved call to
+# the same tool in a LATER run as the agent retrying after a refusal, and fails a
+# run that was correct. Deny once to demo the gate, run again and approve, and the
+# harness reports a failure that never happened.
+RUN_ID = uuid4().hex[:12]
+
+
 def log_action(event: str, **fields: object) -> None:
     """Append one event. Never raises."""
     try:
@@ -36,6 +51,7 @@ def log_action(event: str, **fields: object) -> None:
         # Attribution LAST — the caller cannot overwrite these.
         record["event"] = event
         record["agent"] = _agent()
+        record["run_id"] = RUN_ID
         record["pid"] = os.getpid()
         record["ts"] = datetime.now(UTC).isoformat()
 
